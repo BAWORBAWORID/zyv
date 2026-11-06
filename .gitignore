@@ -1,0 +1,13 @@
+# data node — jangan pernah upload
+*.dat
+*.log
+
+# build artifacts
+zyvor
+zyvor.o
+*.o
+tests/test_fork
+test_fork
+
+# file sistem
+.DS_Store
