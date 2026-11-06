@@ -6,6 +6,7 @@
 #include <thread>
 #include <sstream>
 #include <ctime>
+#include <filesystem>
 
 #include "params.h"
 #include "block.h"
@@ -20,7 +21,15 @@ using namespace zyv;
 
 static const std::string CHAIN_FILE = "zyvor_chain.dat";
 static const std::string MEMPOOL_FILE = "zyvor_mempool.dat";
-static const std::string WALLET_FILE = "zyvor_wallet.dat";
+// Wallet TIDAK disimpan di direktori node/jaringan — milik pengguna saja,
+// di home directory: ~/.zyvor/wallet.dat
+static std::string walletFilePath() {
+    const char* home = std::getenv("HOME");
+    std::string dir = (home ? std::string(home) : ".") + "/.zyvor";
+    std::filesystem::create_directories(dir);
+    return dir + "/wallet.dat";
+}
+static const std::string WALLET_FILE = walletFilePath();
 
 static const uint64_t TX_FEE = MIN_TX_FEE; // fee jaringan (zyvor per tx)
 
