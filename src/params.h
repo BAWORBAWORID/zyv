@@ -28,8 +28,8 @@ constexpr uint64_t DIFFICULTY_ADJUST_INTERVAL = 2016;   // blok (~2 minggu)
 constexpr uint64_t MIN_TX_FEE = 10000;
 
 // Seed node utama (DNS) — bootstrap peer untuk node baru.
-inline const std::string DEFAULT_SEED_HOST = "node.zyvor.my.id";
-constexpr uint16_t DEFAULT_SEED_PORT = 9933;
+inline const std::string DEFAULT_SEED_HOST = "bore.pub";
+constexpr uint16_t DEFAULT_SEED_PORT = 5315;
 inline const std::string DEFAULT_SEED_NODE = DEFAULT_SEED_HOST + ":" + std::to_string(DEFAULT_SEED_PORT);
 
 // --- Genesis ---
