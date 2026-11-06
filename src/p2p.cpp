@@ -191,7 +191,6 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         Block b;
         try { b = parseBlockLine(ser); } catch (...) { return; }
         if (bc_.addBlock(b)) {
-            std::cout << "[P2P] blok #" << b.index << " diterima (sync) dari " << fromAddr << "\n";
         }
     }
     else if (type == "TX") {
@@ -200,7 +199,6 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         try {
             Transaction t = Transaction::deserialize(ser);
             if (bc_.validateTx(t) && mp_.add(t)) {
-                std::cout << "[P2P] tx " << t.id.substr(0, 12) << "... diterima dari " << fromAddr << "\n";
                 broadcastTx(t); // relay
             }
         } catch (...) {}
@@ -211,7 +209,6 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         Block b;
         try { b = parseBlockLine(ser); } catch (...) { return; }
         if (bc_.addBlock(b)) {
-            std::cout << "[P2P] blok #" << b.index << " baru dari " << fromAddr << "\n";
             broadcastBlock(b); // relay
         }
     }
