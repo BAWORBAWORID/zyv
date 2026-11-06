@@ -359,7 +359,12 @@ int main(int argc, char** argv) {
         }
         if (seeds.empty()) seeds.push_back(DEFAULT_SEED_NODE); // node.zyvor.my.id:9933
         for (const auto& s : seeds) p2p.connectTo(s);
-        for (;;) std::this_thread::sleep_for(std::chrono::seconds(60));
+        // simpan rantai berkala (blok yang diterima via P2P ikut persist ke disk)
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            saveChain(bc);
+            saveMempool(mp);
+        }
     }
 
     // ---------------------------------------------------------------- connect
