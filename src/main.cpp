@@ -15,6 +15,10 @@
 #include "keys.h"
 #include "sha256.h"
 #include "p2p.h"
+#include "miner.h"
+#include <atomic>
+static std::atomic<bool> mdStop{false};
+#include <csignal>
 #include "rpc.h"
 
 using namespace zyv;
@@ -178,6 +182,10 @@ static void usage() {
         "  zyvor send <dari> <ke> <amt>  Kirim ZYVC (mis. 10.5)\n"
         "  zyvor mempool                 Daftar transaksi menunggu\n"
         "  zyvor mine <N> [miner]        Tambang N blok (dengan mempool)\n"
+        "  zyvor miner solo [alamat] [interval_s] [always]\n"
+        "                                Miner daemon (poll mempool, auto-mine)\n"
+        "  zyvor miner pool <url> <worker> <payout_addr>\n"
+        "                                Worker stratum: share ke pool, PPLNS payout\n"
         "  zyvor node [p2p_port]         Jalankan node P2P + RPC (default 9933)\n"
         "  zyvor connect <ip:port> ...   Sambungkan ke peer\n"
         "  zyvor hash <teks>             SHA-256\n"
@@ -387,6 +395,30 @@ int main(int argc, char** argv) {
                 for (const auto& s : seeds) p2p.connectTo(s);
             }
         }
+    }
+
+    // ---------------------------------------------------------------- miner daemon
+    if (cmd == "miner" && argc > 2) {
+        std::string mode = argv[2]; // solo | pool
+        MinerDaemon md;
+        std::thread t;
+        if (mode == "solo") {
+            std::string addr = (argc > 3) ? argv[3] : "";
+            int interval = (argc > 4) ? std::stoi(argv[4]) : 60;
+            bool always = (argc > 5 && std::string(argv[5]) == "always");
+            t = std::thread([&, addr, interval, always] { md.runSolo(bc, mp, addr, interval, always, mdStop); });
+        } else if (mode == "pool") {
+            std::string pool = (argc > 3) ? argv[3] : "http://127.0.0.1:8933";
+            std::string wname = (argc > 4) ? argv[4] : "worker1";
+            std::string payout = (argc > 5) ? argv[5] : "";
+            t = std::thread([&, pool, wname, payout] { md.runPoolWorker(pool, wname, payout, mdStop); });
+        } else {
+            std::cout << "gunakan: zyvor miner solo [alamat] [interval_s] [always]\n"
+                         "        zyvor miner pool <url> <worker> <payout_addr>\n";
+            return 1;
+        }
+        t.join();
+        return 0;
     }
 
     // ---------------------------------------------------------------- connect

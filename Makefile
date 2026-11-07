@@ -1,8 +1,8 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-deprecated-declarations
-LDLIBS   := -lcrypto -pthread
+LDLIBS   := -lcrypto -lcurl -pthread
 SRC      := src/main.cpp src/sha256.cpp src/block.cpp src/blockchain.cpp \
-            src/transaction.cpp src/keys.cpp src/p2p.cpp src/rpc.cpp
+            src/transaction.cpp src/keys.cpp src/p2p.cpp src/rpc.cpp src/miner.cpp
 HDRS     := src/sha256.h src/params.h src/transaction.h src/block.h \
             src/blockchain.h src/keys.h src/utxo.h src/mempool.h
 TARGET   := zyvor

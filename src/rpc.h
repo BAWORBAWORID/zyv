@@ -1,6 +1,8 @@
 #pragma once
 #include <atomic>
+#include <map>
 #include <mutex>
+#include <vector>
 #include <string>
 #include "blockchain.h"
 #include "mempool.h"
@@ -43,6 +45,18 @@ private:
     std::string jsonPeers();
     std::string jsonSendRaw(const std::string& body);
     std::string jsonMine(const std::string& query);
+
+    // ---- pool (stratum-style, PPLNS) ----
+    struct PoolShare { std::string worker; std::string hash; uint64_t nonce; uint64_t ts; bool full; };
+    std::string jsonPoolWork();
+    std::string jsonPoolSubmit(const std::string& body);
+    std::string jsonPoolStats();
+    std::string jsonPoolWorker(const std::string& body);
+    std::vector<PoolShare> shares_;
+    std::map<std::string,std::string> workerAddr_; // worker -> payout address
+    std::mutex poolMtx_;
+    uint64_t lastPaidHeight_ = 0;
+    std::string poolFile_ = "zyvor_pool.dat";
 
     Blockchain& bc_;
     Mempool& mp_;

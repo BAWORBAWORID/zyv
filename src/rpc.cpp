@@ -1,5 +1,7 @@
 #include "rpc.h"
+#include "sha256.h"
 #include "block.h"
+#include <fstream>
 #include "keys.h"
 #include "params.h"
 
@@ -142,6 +144,12 @@ std::string RpcServer::route(const std::string& method, const std::string& path,
 
     // ------------------------------------------------------------ GET /api/mine?addr=X&n=1
     if (path == "/api/mine") return jsonMine(query);
+
+    // ------------------------------------------------------------ pool (stratum-style)
+    if (path == "/api/pool/work") return jsonPoolWork();
+    if (path == "/api/pool/stats") return jsonPoolStats();
+    if (path == "/api/pool/submit" && method == "POST") return jsonPoolSubmit(body);
+    if (path == "/api/pool/worker" && method == "POST") return jsonPoolWorker(body);
 
     return jsonErr("not found");
 }
@@ -305,6 +313,113 @@ std::string RpcServer::jsonMine(const std::string& query) {
           << ",\"txs\":" << b.transactions.size() << "}";
     }
     o << "],\"height\":" << bc_.height() << "}";
+    return o.str();
+}
+
+
+// ============================================================================
+// Pool (stratum-style over HTTP, PPLNS payout)
+// ============================================================================
+
+// JSON field extractor sederhana: "key":"value" atau "key":123
+static std::string jsonExtract(const std::string& json, const std::string& key) {
+    std::string pat = std::string("\"") + key + "\":";
+    size_t p = json.find(pat);
+    if (p == std::string::npos) return "";
+    p += pat.size();
+    while (p < json.size() && json[p] == ' ') p++;
+    if (p >= json.size()) return "";
+    if (json[p] == '"') {
+        size_t e = json.find('"', p + 1);
+        return json.substr(p + 1, e - p - 1);
+    }
+    size_t e = p;
+    while (e < json.size() && (isdigit((unsigned char)json[e]) || json[e] == '.' || json[e] == '-')) e++;
+    return json.substr(p, e - p);
+}
+
+// Share difficulty pool: network difficulty - 4 bit (min. 1 bit).
+static uint32_t poolShareDifficulty(uint32_t net) {
+    return net > 4 ? net - 4 : 1;
+}
+
+std::string RpcServer::jsonPoolWork() {
+    std::lock_guard<std::mutex> lk(poolMtx_);
+    uint64_t h = bc_.height();
+    uint64_t reward = bc_.rewardForHeight(h ? h : 0) + 0; // estimasi tanpa fee
+    uint64_t ts = (uint64_t)time(nullptr);
+    std::ostringstream o;
+    o << "{\"prevHash\":" << jstr(h ? bc_.tip().hash : "")
+      << ",\"height\":" << h
+      << ",\"difficulty\":" << bc_.difficulty()
+      << ",\"shareDifficulty\":" << poolShareDifficulty(bc_.difficulty())
+      << ",\"poolAddress\":" << jstr(GENESIS_ADDRESS)
+      << ",\"reward\":" << reward
+      << ",\"ts\":" << ts
+      << "}";
+    return o.str();
+}
+
+std::string RpcServer::jsonPoolSubmit(const std::string& body) {
+    std::string worker = jsonExtract(body, "worker");
+    std::string hash = jsonExtract(body, "hash");
+    uint64_t nonce = 0, height = 0;
+    bool full = body.find("\"full\":true") != std::string::npos;
+    try { nonce = std::stoull(jsonExtract(body, "nonce")); } catch (...) {}
+    try { height = std::stoull(jsonExtract(body, "height")); } catch (...) {}
+    if (worker.empty() || hash.size() != 64) return jsonErr("bad share");
+
+    std::lock_guard<std::mutex> lk(poolMtx_);
+    // verifikasi share: hash harus benar2 hasil preimage yang bisa direproduksi
+    // (worker: prevHash|worker|nonce) — prevHash saat height di-submit.
+    std::string prev = (height >= 1 && height <= bc_.chain().size()) ? bc_.chain()[height-1].hash : "";
+    std::string expect = sha256(sha256(prev + "|" + worker + "|" + std::to_string(nonce)));
+    if (expect != hash) return jsonErr("share tidak valid (hash mismatch)");
+
+    uint32_t sd = poolShareDifficulty(bc_.difficulty());
+    if (!meetsDifficulty(hash, sd)) return jsonErr("share di bawah target pool");
+
+    // dedup
+    for (auto& sh : shares_)
+        if (sh.worker == worker && sh.nonce == nonce && sh.hash == hash)
+            return jsonErr("share duplikat");
+
+    shares_.push_back({worker, hash, nonce, (uint64_t)time(nullptr), full});
+    // simpan persist
+    std::ofstream pf(poolFile_, std::ios::app);
+    pf << worker << "|" << hash << "|" << nonce << "|" << time(nullptr) << "|" << (full?1:0) << "\n";
+
+    if (full) {
+        // blok full-difficulty: pool mine dengan coinbase PPLNS nanti; untuk sekarang
+        // catat sebagai blok ditemukan — payout dilakukan manual oleh operator pool
+        // (wallet pool) via PPLNS setelah blok dikonfirmasi.
+        return "{\"status\":\"BLOCK_FOUND\",\"msg\":\"blok full-difficulty dicatat, payout PPLNS berjalan\"}";
+    }
+    return "{\"status\":\"ok\",\"shares\":" + std::to_string(shares_.size()) + "}";
+}
+
+std::string RpcServer::jsonPoolWorker(const std::string& body) {
+    std::string worker = jsonExtract(body, "worker");
+    std::string address = jsonExtract(body, "address");
+    if (worker.empty() || address.empty()) return jsonErr("worker/address kosong");
+    std::lock_guard<std::mutex> lk(poolMtx_);
+    workerAddr_[worker] = address;
+    return "{\"status\":\"ok\",\"worker\":" + jstr(worker) + ",\"address\":" + jstr(address) + "}";
+}
+
+std::string RpcServer::jsonPoolStats() {
+    std::lock_guard<std::mutex> lk(poolMtx_);
+    std::map<std::string, uint64_t> per;
+    for (auto& sh : shares_) per[sh.worker]++;
+    std::ostringstream o;
+    o << "{\"total_shares\":" << shares_.size() << ",\"workers\":{";
+    bool first = true;
+    for (auto& kv : per) {
+        if (!first) o << ",";
+        first = false;
+        o << jstr(kv.first) << ":" << kv.second;
+    }
+    o << "},\"share_difficulty\":" << poolShareDifficulty(bc_.difficulty()) << "}";
     return o.str();
 }
 

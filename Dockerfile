@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     make \
     libssl-dev \
+    libcurl4-openssl-dev \
     ca-certificates \
     curl \
  && rm -rf /var/lib/apt/lists/*
