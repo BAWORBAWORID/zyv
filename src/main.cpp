@@ -263,6 +263,42 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---------------------------------------------------------------- addr (derivation-only, tanpa jaringan)
+    // Tampilkan alamat + public key dari wallet.dat ATAU dari privkey yang ditempel.
+    // Tidak menyentuh chain — cocok untuk verifikasi kunci offline.
+    if (cmd == "addr") {
+        auto w = loadWallet();
+        if (argc > 2) {
+            // mode: zyvor addr <privkey_hex>  → derive tanpa menyimpan
+            std::string priv = argv[2];
+            KeyPair kp = keyPairFromPrivate(priv);
+            if (kp.address.empty()) { std::cout << "Privkey tidak valid (harus hex 64 char).\n"; return 1; }
+            std::cout << "privkey : " << kp.privateKey << "\n";
+            std::cout << "pubkey  : " << kp.publicKey << "\n";
+            std::cout << "address : " << kp.address << "\n";
+            return 0;
+        }
+        if (w.empty()) { std::cout << "Belum ada alamat. Jalankan: zyvor keygen\n"; return 0; }
+        for (size_t i = 0; i < w.size(); i++) {
+            std::cout << "[" << i << "] address : " << w[i].address << "\n";
+            std::cout << "    pubkey  : " << w[i].publicKey << "\n";
+        }
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- verify (privkey cocok dengan alamat?)
+    if (cmd == "verify" && argc > 3) {
+        std::string priv = argv[2], wantAddr = argv[3];
+        KeyPair kp = keyPairFromPrivate(priv);
+        if (kp.address.empty()) { std::cout << "Privkey tidak valid.\n"; return 1; }
+        if (kp.address == wantAddr) {
+            std::cout << "VALID: privkey = alamat " << wantAddr << "\n";
+            return 0;
+        }
+        std::cout << "TIDAK COCOK: privkey ini menghasilkan alamat " << kp.address << "\n";
+        return 1;
+    }
+
     // ---------------------------------------------------------------- balance
     if (cmd == "balance" && argc > 2) {
         autoSync(false); // saldo selalu segar dari server utama
