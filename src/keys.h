@@ -49,4 +49,20 @@ bool encryptWalletFile(const std::string& path, const std::string& plaintext,
 bool decryptWalletFile(const std::string& path, std::string& plaintext,
                        const std::string& passphrase);
 
+// ============================================================================
+// Enkripsi pesan on-chain (ECIES: ECDH secp256k1 + AES-256-GCM + HKDF-SHA256).
+// Format memo terenkripsi:
+//   "1|<ephemeral_pubkey_hex 66>|<nonce_hex 24>|<ciphertext+tag hex>"
+// Hanya pemegang private key penerima yang bisa dekrip.
+// ============================================================================
+std::string encryptMessage(const std::string& recipientPubKeyHex,
+                           const std::string& plaintext);
+// privHex = private key penerima. Return plaintext asli, atau string kosong
+// (dengan err diisi) bila gagal.
+std::string decryptMessage(const std::string& privHex,
+                           const std::string& encMemo,
+                           std::string& err);
+// Cek apakah memo berformat terenkripsi ("1|" prefix).
+bool isEncryptedMemo(const std::string& memo);
+
 } // namespace zyv

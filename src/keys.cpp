@@ -9,6 +9,8 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/ecdh.h>
 #include <openssl/kdf.h>
 
 #include <algorithm>
@@ -304,6 +306,155 @@ bool decryptWalletFile(const std::string& path, std::string& plaintext,
 
     plaintext.assign(pt.begin(), pt.begin() + ptLen);
     return true;
+}
+
+// ============================================================================
+// Enkripsi pesan on-chain (ECIES)
+//   ECDH secp256k1 (ephemeral x recipient pubkey) -> HKDF-SHA256 -> AES-256-GCM
+// Memo: "1|" + ephemeral_pubkey_hex + "|" + nonce_hex + "|" + ct_hex(+tag16)
+// ============================================================================
+
+bool isEncryptedMemo(const std::string& memo) {
+    return memo.rfind("1|", 0) == 0;
+}
+
+// ECDH: privKey x pubKeyBytes -> 32-byte shared secret (X koordinat)
+static bool ecdhShared(const std::string& privHex, const std::vector<uint8_t>& pubBytes,
+                       uint8_t out[32]) {
+    EC_KEY* key = EC_KEY_new_by_curve_name(NID_secp256k1);
+    if (!key) return false;
+    BIGNUM* priv = BN_new();
+    BN_hex2bn(&priv, privHex.c_str());
+    bool ok = EC_KEY_set_private_key(key, priv) == 1;
+    const EC_GROUP* grp = ok ? EC_KEY_get0_group(key) : nullptr;
+    EC_POINT* pubPt = nullptr;
+    if (ok) {
+        pubPt = EC_POINT_new(grp);
+        ok = EC_POINT_oct2point(grp, pubPt, pubBytes.data(), pubBytes.size(), nullptr) == 1;
+    }
+    if (ok) ok = EC_KEY_set_public_key(key, pubPt) == 1;
+    if (ok) {
+        // ECDH_compute_key menghasilkan X koordinat shared point
+        ok = ECDH_compute_key(out, 32, pubPt, key, nullptr) == 32;
+    }
+    if (pubPt) EC_POINT_free(pubPt);
+    BN_free(priv);
+    EC_KEY_free(key);
+    return ok;
+}
+
+// HKDF-Extract+Expand sederhana (salt kosong, info "zyvor-msg-v1")
+static void hkdfKey(const uint8_t* secret, size_t secretLen, uint8_t out[32]) {
+    const std::string info = "zyvor-msg-v1";
+    uint8_t prk[32];
+    unsigned int prkLen = 0;
+    // Extract: HMAC-SHA256(salt="", secret)
+    HMAC(EVP_sha256(), nullptr, 0, secret, (int)secretLen, prk, &prkLen);
+    // Expand: T(1) = HMAC(prk, info || 0x01)
+    std::vector<uint8_t> data(info.begin(), info.end());
+    data.push_back(1);
+    unsigned int outLen = 0;
+    HMAC(EVP_sha256(), prk, 32, data.data(), (int)data.size(), out, &outLen);
+}
+
+std::string encryptMessage(const std::string& recipientPubKeyHex,
+                           const std::string& plaintext) {
+    // 1. ephemeral keypair
+    EC_KEY* eph = EC_KEY_new_by_curve_name(NID_secp256k1);
+    if (!eph || EC_KEY_generate_key(eph) != 1) { if (eph) EC_KEY_free(eph); return ""; }
+    const EC_GROUP* grp = EC_KEY_get0_group(eph);
+    const EC_POINT* pt = EC_KEY_get0_public_key(eph);
+    size_t pubLen = EC_POINT_point2oct(grp, pt, POINT_CONVERSION_COMPRESSED, nullptr, 0, nullptr);
+    std::vector<uint8_t> ephPub(pubLen);
+    EC_POINT_point2oct(grp, pt, POINT_CONVERSION_COMPRESSED, ephPub.data(), pubLen, nullptr);
+    const BIGNUM* ephPriv = EC_KEY_get0_private_key(eph);
+    char* ephPrivHexC = BN_bn2hex(ephPriv);
+    std::string ephPrivHex = ephPrivHexC;
+    OPENSSL_free(ephPrivHexC);
+    EC_KEY_free(eph);
+
+    // 2. ECDH dengan pubkey penerima
+    std::vector<uint8_t> recipPub;
+    if (!whFromHex(recipientPubKeyHex, recipPub) || recipPub.size() != 33) return "";
+    if (recipPub.empty()) return "";
+    uint8_t secret[32];
+    if (!ecdhShared(ephPrivHex, recipPub, secret)) return "";
+
+    // 3. HKDF -> AES key
+    uint8_t aesKey[32];
+    hkdfKey(secret, 32, aesKey);
+
+    // 4. AES-256-GCM encrypt
+    uint8_t iv[12];
+    if (RAND_bytes(iv, sizeof(iv)) != 1) return "";
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return "";
+    std::vector<uint8_t> ct(plaintext.size() + 16);
+    int len = 0, ctLen = 0;
+    bool ok = true;
+    if (ok && EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) ok = false;
+    if (ok && EVP_EncryptInit_ex(ctx, nullptr, nullptr, aesKey, iv) != 1) ok = false;
+    if (ok && !plaintext.empty() &&
+        EVP_EncryptUpdate(ctx, ct.data(), &len,
+                          (const uint8_t*)plaintext.data(), (int)plaintext.size()) != 1) ok = false;
+    ctLen = len;
+    if (ok && EVP_EncryptFinal_ex(ctx, ct.data() + ctLen, &len) != 1) ok = false;
+    ctLen += len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, ct.data() + ctLen) != 1) ok = false;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) return "";
+
+    // 5. format memo
+    std::string memo = "1|" + whToHex(ephPub.data(), ephPub.size()) + "|" +
+                       whToHex(iv, sizeof(iv)) + "|" +
+                       whToHex(ct.data(), ctLen + 16);
+    return memo;
+}
+
+std::string decryptMessage(const std::string& privHex,
+                           const std::string& encMemo,
+                           std::string& err) {
+    err.clear();
+    if (!isEncryptedMemo(encMemo)) { err = "bukan memo terenkripsi"; return ""; }
+    // parse 3 field
+    size_t p1 = encMemo.find('|');                 // after "1"
+    size_t p2 = encMemo.find('|', p1 + 1);
+    size_t p3 = encMemo.find('|', p2 + 1);
+    if (p3 == std::string::npos) { err = "format salah"; return ""; }
+    std::string ephPubHex = encMemo.substr(p1 + 1, p2 - p1 - 1);
+    std::string ivHex = encMemo.substr(p2 + 1, p3 - p2 - 1);
+    std::string ctHex = encMemo.substr(p3 + 1);
+
+    std::vector<uint8_t> ephPub, iv, ct;
+    if (!whFromHex(ephPubHex, ephPub) || ephPub.size() != 33) { err = "ephemeral pubkey salah"; return ""; }
+    if (!whFromHex(ivHex, iv) || iv.size() != 12) { err = "nonce salah"; return ""; }
+    if (!whFromHex(ctHex, ct) || ct.size() < 17) { err = "ciphertext salah"; return ""; }
+
+    uint8_t secret[32];
+    if (!ecdhShared(privHex, ephPub, secret)) { err = "ECDH gagal"; return ""; }
+    uint8_t aesKey[32];
+    hkdfKey(secret, 32, aesKey);
+
+    const uint8_t* tag = ct.data() + ct.size() - 16;
+    int ctLen = int(ct.size() - 16);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) { err = "ctx gagal"; return ""; }
+    std::vector<uint8_t> plain(ctLen + 16);
+    bool ok = true;
+    int len = 0, ptLen = 0;
+    if (ok && EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) ok = false;
+    if (ok && EVP_DecryptInit_ex(ctx, nullptr, nullptr, aesKey, iv.data()) != 1) ok = false;
+    if (ok && ctLen > 0 && EVP_DecryptUpdate(ctx, plain.data(), &len, ct.data(), ctLen) != 1) ok = false;
+    ptLen = len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void*)tag) != 1) ok = false;
+    if (ok && EVP_DecryptFinal_ex(ctx, plain.data() + ptLen, &len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        err = "dekripsi gagal (bukan penerima / pesan rusak)";
+        return "";
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    return std::string(plain.begin(), plain.begin() + ptLen);
 }
 
 } // namespace zyv

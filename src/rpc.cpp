@@ -153,6 +153,8 @@ std::string RpcServer::route(const std::string& method, const std::string& path,
     // ------------------------------------------------------------ GET /api/messages?addr=X[&limit=N]
     if (path == "/api/messages") return jsonMessages(query);
 
+    if (path == "/api/pubkey") return jsonPubkey(query);
+
     // ------------------------------------------------------------ GET /api/mine?addr=X&n=1
     if (path == "/api/mine") return jsonMine(query);
 
@@ -323,8 +325,24 @@ static std::string urlDecode(const std::string& s) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Indeks addr -> pubkey dari semua tx on-chain (input memuat pubkey pengirim).
+// Dipakai untuk enkripsi pesan (ECIES butuh pubkey penerima).
+static std::map<std::string, std::string> buildPubkeyIndex(const Blockchain& bc) {
+    std::map<std::string, std::string> idx;
+    for (const auto& b : bc.chain()) {
+        for (const auto& t : b.transactions) {
+            if (t.isCoinbase() || t.inputs.empty()) continue;
+            std::string from = publicKeyToAddress(t.inputs[0].pubkey);
+            if (!idx.count(from)) idx[from] = t.inputs[0].pubkey;
+        }
+    }
+    return idx;
+}
+
 std::string RpcServer::jsonSend(const std::string& body, const std::string& query) {
     std::string from, to, amountStr, memo;
+    bool enc = false;
     std::istringstream qs(query);
     std::string kv;
     while (std::getline(qs, kv, '&')) {
@@ -333,6 +351,7 @@ std::string RpcServer::jsonSend(const std::string& body, const std::string& quer
         std::string k = kv.substr(0, eq), v = urlDecode(kv.substr(eq + 1));
         if (k == "from") from = v;
         else if (k == "to") to = v;
+        else if (k == "enc") enc = (v == "1" || v == "true");
         else if (k == "amount") amountStr = v;
         else if (k == "data") memo = v;
     }
@@ -348,6 +367,17 @@ std::string RpcServer::jsonSend(const std::string& body, const std::string& quer
     }
     if (from.empty() || to.empty() || amountStr.empty())
         return jsonErr("butuh from, to, amount (data/memo opsional)");
+
+    // enkripsi memo (ECIES) pakai pubkey penerima dari index on-chain
+    if (enc && !memo.empty()) {
+        auto idx = buildPubkeyIndex(bc_);
+        auto it = idx.find(to);
+        if (it == idx.end())
+            return jsonErr("tidak bisa enkripsi: pubkey penerima belum dikenal (dia belum pernah kirim tx)");
+        std::string ct = encryptMessage(it->second, memo);
+        if (ct.empty()) return jsonErr("enkripsi gagal");
+        memo = ct;
+    }
 
     uint64_t amount = 0;
     try { amount = rpcParseAmount(amountStr); } catch (...) { return jsonErr("amount tidak valid"); }
@@ -500,6 +530,23 @@ std::string RpcServer::jsonMessages(const std::string& query) {
     }
     o << "]}";
     return o.str();
+}
+
+std::string RpcServer::jsonPubkey(const std::string& query) {
+    std::string addr;
+    std::istringstream qs(query);
+    std::string kv;
+    while (std::getline(qs, kv, '&')) {
+        size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        if (kv.substr(0, eq) == "addr") addr = urlDecode(kv.substr(eq + 1));
+    }
+    if (addr.empty()) return jsonErr("butuh addr");
+    auto idx = buildPubkeyIndex(bc_);
+    auto it = idx.find(addr);
+    if (it == idx.end())
+        return jsonErr("pubkey alamat belum dikenal (alamat belum pernah mengirim tx)");
+    return "{\"status\":\"ok\",\"addr\":" + jstr(addr) + ",\"pubkey\":" + jstr(it->second) + "}";
 }
 
 std::string RpcServer::jsonMine(const std::string& query) {

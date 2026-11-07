@@ -88,13 +88,16 @@ void Blockchain::adjustDifficulty(uint64_t newTimestamp) {
 bool Blockchain::validateTx(const Transaction& tx, const UtxoSet& ut) const {
     if (tx.inputs.empty()) return false; // coinbase tidak masuk mempool/validasi tx biasa
 
-    // data/memo on-chain (OP_RETURN-style): maks 80 byte, karakter aman
+    // data/memo on-chain: maks 5000 byte, karakter aman.
+    // Memo terenkripsi (format "1|epub|nonce|ct") dikecualikan dari larang '|'
+    // karena memang berisi pemisah '|'.
     if (!tx.data.empty()) {
+        bool isEnc = tx.data.rfind("1|", 0) == 0;
         if (tx.data.size() > MAX_TX_DATA_BYTES) return false;
         for (char c : tx.data) {
             unsigned char u = (unsigned char)c;
-            if (u < 32 || u == (unsigned char)'|' || u == (unsigned char)':' ||
-                u == 10 || u == 13)
+            if (u < 32 || u == 10 || u == 13) return false;
+            if (!isEnc && (u == (unsigned char)'|' || u == (unsigned char)':'))
                 return false;
         }
     }

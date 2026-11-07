@@ -349,7 +349,22 @@ int main(int argc, char** argv) {
             char buf[32];
             std::strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M", std::localtime(&tt));
             std::cout << "  blok " << m.block << "  " << buf << "  dari " << m.from << "\n";
-            std::cout << "    > " << m.data << "\n";
+            if (isEncryptedMemo(m.data)) {
+                // dekrip pakai private key alamat ini (kalau ada di wallet)
+                std::string shown;
+                if (mine) {
+                    std::string privMe;
+                    for (const auto& k : w) if (k.address == me) { privMe = k.privateKey; break; }
+                    std::string err;
+                    std::string pt = decryptMessage(privMe, m.data, err);
+                    shown = pt.empty() ? ("[terenkripsi - " + err + "]") : pt;
+                } else {
+                    shown = "[terenkripsi - butuh wallet penerima]";
+                }
+                std::cout << "    > " << shown << "\n";
+            } else {
+                std::cout << "    > " << m.data << "\n";
+            }
         }
         return 0;
     }

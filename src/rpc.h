@@ -46,6 +46,7 @@ private:
     std::string jsonSendRaw(const std::string& body);
     std::string jsonSend(const std::string& body, const std::string& query);
     std::string jsonMessages(const std::string& query);
+    std::string jsonPubkey(const std::string& query);
     std::string jsonMine(const std::string& query);
 
     // ---- pool (stratum-style, PPLNS) ----

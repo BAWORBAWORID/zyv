@@ -57,7 +57,12 @@ struct Transaction {
             s += std::to_string(out.amount) + ":" + out.address + "|";
         }
         s += std::to_string(timestamp);
-        if (!data.empty()) s += "|" + data;
+        if (!data.empty()) {
+            std::string d = data;
+            std::string esc;
+            for (char c : d) { if (c == '|') esc += "%7C"; else if (c == '%') esc += "%25"; else esc += c; }
+            s += "|" + esc;
+        }
         return s;
     }
 
@@ -79,7 +84,12 @@ struct Transaction {
             s += "|" + std::to_string(out.amount) + "|" + out.address;
         }
         s += "|" + std::to_string(timestamp);
-        if (!data.empty()) s += "|" + data;
+        if (!data.empty()) {
+            std::string d = data;
+            std::string esc;
+            for (char c : d) { if (c == '|') esc += "%7C"; else if (c == '%') esc += "%25"; else esc += c; }
+            s += "|" + esc;
+        }
         return s;
     }
 
@@ -110,8 +120,17 @@ struct Transaction {
             tx.outputs.push_back(out);
         }
         tx.timestamp = std::stoull(next());
-        // field opsional (backward-compatible): data hex jika ada
-        if (pos < line.size()) tx.data = next();
+        // field opsional (backward-compatible): data (pipe di-escape %7C)
+        if (pos < line.size()) {
+            std::string d = next();
+            std::string unesc;
+            for (size_t i = 0; i < d.size(); i++) {
+                if (d[i] == '%' && i + 2 < d.size() && d[i+1] == '7' && d[i+2] == 'C') { unesc += '|'; i += 2; }
+                else if (d[i] == '%' && i + 2 < d.size() && d[i+1] == '2' && d[i+2] == '5') { unesc += '%'; i += 2; }
+                else unesc += d[i];
+            }
+            tx.data = unesc;
+        }
         return tx;
     }
 };
