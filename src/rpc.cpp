@@ -13,6 +13,10 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <ctime>
+#include <cstdlib>
+#include <filesystem>
+#include <iterator>
 
 namespace zyv {
 
@@ -141,6 +145,9 @@ std::string RpcServer::route(const std::string& method, const std::string& path,
 
     // ------------------------------------------------------------ POST /api/sendrawtx
     if (path == "/api/sendrawtx" && method == "POST") return jsonSendRaw(body);
+
+    // ------------------------------------------------------------ POST /api/send?from=X&to=Y&amount=Z&data=pesan
+    if (path == "/api/send" && method == "POST") return jsonSend(body, query);
 
     // ------------------------------------------------------------ GET /api/mine?addr=X&n=1
     if (path == "/api/mine") return jsonMine(query);
@@ -282,6 +289,141 @@ std::string RpcServer::jsonSendRaw(const std::string& body) {
     } catch (const std::exception& e) {
         return jsonErr(std::string("bad tx serialization: ") + e.what());
     }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/send?from=X&to=Y&amount=Z  (+ memo opsional)
+//   memo sumber: query "data=..." (URL-encoded) ATAU raw body
+//   Membangun & menandatangani transaksi pakai wallet lokal node (~/.zyvor/wallet.dat),
+//   lalu memasukkan ke mempool + broadcast. Memo kosong = transfer biasa.
+static uint64_t rpcParseAmount(const std::string& s) {
+    size_t dot = s.find('.');
+    std::string whole = (dot == std::string::npos) ? s : s.substr(0, dot);
+    std::string frac = (dot == std::string::npos) ? "" : s.substr(dot + 1);
+    while (frac.size() < 8) frac += '0';
+    frac = frac.substr(0, 8);
+    uint64_t w = whole.empty() ? 0 : std::stoull(whole);
+    uint64_t fr = frac.empty() ? 0 : std::stoull(frac);
+    return w * SATOSHIS_PER_COIN + fr;
+}
+
+static std::string urlDecode(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            out += (char)std::strtol(s.substr(i + 1, 2).c_str(), nullptr, 16);
+            i += 2;
+        } else if (s[i] == '+') out += ' ';
+        else out += s[i];
+    }
+    return out;
+}
+
+std::string RpcServer::jsonSend(const std::string& body, const std::string& query) {
+    std::string from, to, amountStr, memo;
+    std::istringstream qs(query);
+    std::string kv;
+    while (std::getline(qs, kv, '&')) {
+        size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = kv.substr(0, eq), v = urlDecode(kv.substr(eq + 1));
+        if (k == "from") from = v;
+        else if (k == "to") to = v;
+        else if (k == "amount") amountStr = v;
+        else if (k == "data") memo = v;
+    }
+    // memo fallback: body (plain text, bukan JSON)
+    if (memo.empty()) {
+        std::string b = body;
+        // trim
+        size_t a = b.find_first_not_of(" 	\r\n");
+        size_t z = b.find_last_not_of(" 	\r\n");
+        if (a != std::string::npos) memo = b.substr(a, z - a + 1);
+        if (memo.size() >= 2 && memo.front() == '{') memo.clear(); // body JSON tidak dianggap memo
+        if (!memo.empty()) memo = urlDecode(memo);
+    }
+    if (from.empty() || to.empty() || amountStr.empty())
+        return jsonErr("butuh from, to, amount (data/memo opsional)");
+
+    uint64_t amount = 0;
+    try { amount = rpcParseAmount(amountStr); } catch (...) { return jsonErr("amount tidak valid"); }
+    if (amount == 0) return jsonErr("amount tidak valid");
+    if (memo.size() > MAX_TX_DATA_BYTES)
+        return jsonErr("Data/memo terlalu besar (maks " + std::to_string(MAX_TX_DATA_BYTES) + " byte)");
+
+    // wallet lokal node
+    std::string walletFile;
+    {
+        const char* home = std::getenv("HOME");
+        walletFile = (home ? std::string(home) : ".") + std::string("/.zyvor/wallet.dat");
+    }
+    std::vector<KeyPair> w;
+    {
+        std::ifstream f(walletFile);
+        if (!f.good()) return jsonErr("wallet tidak ditemukan di node ini (" + walletFile + ")");
+        std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        std::string pass;
+        if (const char* p = std::getenv("ZYVOR_WALLET_PASS")) pass = p;
+        if (data.rfind("ZYVW1|", 0) == 0) {
+            if (pass.empty()) return jsonErr("wallet terenkripsi — set ZYVOR_WALLET_PASS di node");
+            if (!decryptWalletFile(walletFile, data, pass))
+                return jsonErr("gagal dekripsi wallet (passphrase salah?)");
+        }
+        std::istringstream iss(data);
+        std::string line;
+        while (std::getline(iss, line)) {
+            if (line.empty()) continue;
+            try { w.push_back(keyPairFromPrivate(line)); } catch (...) {}
+        }
+    }
+    const KeyPair* kp = nullptr;
+    for (const auto& k : w) if (k.address == from) { kp = &k; break; }
+    if (!kp) return jsonErr("alamat pengirim tidak ada di wallet node ini");
+
+    // fee (memo progresif, sama seperti CLI)
+    uint64_t fee = MIN_TX_FEE;
+    if (memo.size() > DATA_FREE_LIMIT) {
+        size_t extra = memo.size() - DATA_FREE_LIMIT;
+        fee += ((extra + 999) / 1000) * DATA_FEE_PER_KB;
+    }
+    uint64_t need = amount + fee;
+    auto utxos = bc_.utxo().allForAddress(from);
+    uint64_t total = 0;
+    std::vector<OutPoint> selected;
+    for (const auto& kv2 : utxos) {
+        selected.push_back(kv2.first);
+        total += kv2.second.amount;
+        if (total >= need) break;
+    }
+    if (total < need)
+        return jsonErr("saldo kurang: butuh " + formatCoin(need) + ", tersedia " + formatCoin(total));
+
+    Transaction tx;
+    for (const auto& op : selected) {
+        TxIn in;
+        in.prevOut = op;
+        in.pubkey = kp->publicKey;
+        tx.inputs.push_back(in);
+    }
+    tx.outputs.push_back({amount, to});
+    uint64_t change = total - amount - fee;
+    if (change > 0) tx.outputs.push_back({change, from});
+    tx.timestamp = uint64_t(time(nullptr));
+    if (!memo.empty()) tx.data = memo;
+    tx.id = computeTxId(tx);
+    for (auto& in : tx.inputs) in.signature = signMessage(kp->privateKey, tx.id);
+
+    if (!bc_.validateTx(tx)) return jsonErr("transaksi gagal validasi");
+    mp_.add(tx);
+    p2p_.broadcastTx(tx);
+
+    std::ostringstream o;
+    o << "{\"status\":\"ok\",\"txid\":" << jstr(tx.id)
+      << ",\"from\":" << jstr(from) << ",\"to\":" << jstr(to)
+      << ",\"amount\":\"" << formatCoin(amount) << "\""
+      << ",\"fee\":\"" << formatCoin(fee) << "\""
+      << ",\"data\":" << jstr(tx.data) << "}";
+    return o.str();
 }
 
 std::string RpcServer::jsonMine(const std::string& query) {
