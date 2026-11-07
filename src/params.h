@@ -26,8 +26,11 @@ constexpr uint64_t DIFFICULTY_ADJUST_INTERVAL = 2016;   // blok (~2 minggu)
 
 // Fee jaringan minimum (zyvor per transaksi). 10000 zyvor = 0.0001 ZYVC.
 constexpr uint64_t MIN_TX_FEE = 10000;
-// OP_RETURN-style: data bebas maksimal 80 byte (hex-encode → 160 char) per transaksi.
-constexpr size_t MAX_TX_DATA_BYTES = 80;
+// OP_RETURN-style: data teks bebas maksimal 5000 byte per transaksi.
+// Anti-spam via fee: data >80 byte dikenakan fee tambahan (lihat dataFee()).
+constexpr size_t MAX_TX_DATA_BYTES = 5000;
+constexpr size_t DATA_FREE_LIMIT = 80;      // sampai sini fee normal
+constexpr uint64_t DATA_FEE_PER_KB = 100000; // +0.001 ZYVC per 1000 byte di atas batas gratis
 
 // Seed node utama (DNS) — bootstrap peer untuk node baru.
 inline const std::string DEFAULT_SEED_HOST = "bore.pub";

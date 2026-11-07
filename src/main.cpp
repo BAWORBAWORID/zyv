@@ -253,7 +253,14 @@ int main(int argc, char** argv) {
         if (!kp) { std::cout << "Alamat pengirim tidak ada di wallet.\n"; return 1; }
 
         auto utxos = bc.utxo().allForAddress(from);
-        uint64_t need = amount + TX_FEE;
+        uint64_t fee = TX_FEE;
+        // fee data: di atas DATA_FREE_LIMIT, +DATA_FEE_PER_KB per 1000 byte (pembulatan ke atas)
+        if (memo.size() > DATA_FREE_LIMIT) {
+            size_t extra = memo.size() - DATA_FREE_LIMIT;
+            uint64_t units = (extra + 999) / 1000;
+            fee += units * DATA_FEE_PER_KB;
+        }
+        uint64_t need = amount + fee;
         uint64_t total = 0;
         std::vector<OutPoint> selected;
         for (const auto& kv : utxos) {
@@ -290,7 +297,7 @@ int main(int argc, char** argv) {
         std::cout << "  txid   : " << tx.id << "\n";
         std::cout << "  kirim  : " << formatCoin(amount) << " " << TICKER << " -> " << to << "\n";
         if (change > 0) std::cout << "  kembalian: " << formatCoin(change) << " " << TICKER << " -> " << from << "\n";
-        std::cout << "  fee    : " << formatCoin(TX_FEE) << " " << TICKER << "\n";
+        std::cout << "  fee    : " << formatCoin(fee) << " " << TICKER << "\n";
         std::cout << "Tambang blok agar transaksi terkonfirmasi: zyvor mine 1\n";
         return 0;
     }
