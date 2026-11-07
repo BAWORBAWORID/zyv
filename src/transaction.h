@@ -44,7 +44,16 @@ struct Transaction {
     // Tidak boleh menempel ke UTXO (unspendable), hanya memo/on-chain note.
     std::string data;
 
-    bool isCoinbase() const { return inputs.empty(); }
+    // Coinbase: tanpa input biasa, tapi boleh punya "pseudo-input" berisi
+    // pubkey miner (tanpa signature, prevOut dummy 64 nol) supaya pubkey
+    // miner tercatat on-chain sejak blok pertama (enable enkripsi pesan).
+    bool isCoinbase() const {
+        for (const auto& in : inputs)
+            if (!in.signature.empty() ||
+                in.prevOut.txid != "0000000000000000000000000000000000000000000000000000000000000000")
+                return false;
+        return true;
+    }
 
     // Serialisasi untuk menghitung txid (tidak termasuk signature).
     std::string serializeUnsigned() const {

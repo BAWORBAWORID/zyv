@@ -332,7 +332,7 @@ static std::map<std::string, std::string> buildPubkeyIndex(const Blockchain& bc)
     std::map<std::string, std::string> idx;
     for (const auto& b : bc.chain()) {
         for (const auto& t : b.transactions) {
-            if (t.isCoinbase() || t.inputs.empty()) continue;
+            if (t.inputs.empty() || t.inputs[0].pubkey.empty()) continue;
             std::string from = publicKeyToAddress(t.inputs[0].pubkey);
             if (!idx.count(from)) idx[from] = t.inputs[0].pubkey;
         }

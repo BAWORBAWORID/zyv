@@ -86,7 +86,7 @@ Semua response JSON. Server bind ke `127.0.0.1` (tidak terekspos publik).
 | `POST /api/sendrawtx` | Body = serialisasi transaksi; validasi + relay ke peer |
 | `GET /api/messages?addr=X` | Baca pesan (tx ber-data) per alamat; `&dir=in|out|both&limit=N`; status confirmed/pending |
 | `POST /api/send?from=X&to=Y&amount=Z` | Kirim dari wallet node; memo opsional via `&data=` atau body POST |
-| `GET /api/pubkey?addr=X` | Pubkey on-chain milik alamat (dari tx yang pernah dikirim) |
+| `GET /api/pubkey?addr=X` | Pubkey on-chain milik alamat (dari tx, ATAU otomatis via coinbase miner) |
 | `enc=1` pada /api/send | Enkripsi memo end-to-end (ECIES secp256k1 + AES-256-GCM); hanya penerima bisa baca via `zyvor inbox` |
 | `GET /api/mine?addr=X&n=1` | Tambang N blok (maks 100), broadcast ke peer |
 

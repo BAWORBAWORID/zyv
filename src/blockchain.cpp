@@ -1,4 +1,9 @@
 #include "blockchain.h"
+#include <ctime>
+#include <fstream>
+#include <sstream>
+#include <iterator>
+#include <cstdlib>
 #include "sha256.h"
 #include "keys.h"
 #include <sstream>
@@ -337,6 +342,33 @@ bool Blockchain::replaceChain(const std::string& serialized) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Pubkey miner dari wallet lokal (~/.zyvor/wallet.dat) — dipakai utk mencatat
+// pubkey miner di coinbase (pseudo-input). Return kosong bila tidak ditemukan.
+static std::string minerPubkeyFor(const std::string& address) {
+    if (address.empty()) return "";
+    const char* home = std::getenv("HOME");
+    std::string wf = std::string(home ? home : ".") + "/.zyvor/wallet.dat";
+    std::ifstream f(wf);
+    if (!f.good()) return "";
+    std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::string pass;
+    if (const char* p = std::getenv("ZYVOR_WALLET_PASS")) pass = p;
+    if (data.rfind("ZYVW1|", 0) == 0) {
+        if (pass.empty() || !decryptWalletFile(wf, data, pass)) return "";
+    }
+    std::istringstream iss(data);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.empty()) continue;
+        try {
+            KeyPair kp = keyPairFromPrivate(line);
+            if (kp.address == address) return kp.publicKey;
+        } catch (...) {}
+    }
+    return "";
+}
+
 const Block& Blockchain::mineBlock(const std::vector<Transaction>& txs,
                                    const std::string& minerAddress) {
     if (chain_.empty()) createGenesis();
@@ -378,6 +410,17 @@ const Block& Blockchain::mineBlock(const std::vector<Transaction>& txs,
     Transaction coinbase;
     coinbase.outputs.push_back({reward + fees, minerAddress.empty() ? GENESIS_ADDRESS : minerAddress});
     coinbase.timestamp = b.timestamp;
+    // pseudo-input: catat pubkey miner on-chain (tanpa signature; prevOut dummy nol)
+    {
+        std::string mp = minerPubkeyFor(minerAddress);
+        if (!mp.empty()) {
+            TxIn pin;
+            pin.prevOut.txid = "0000000000000000000000000000000000000000000000000000000000000000";
+            pin.prevOut.index = 0;
+            pin.pubkey = mp;
+            coinbase.inputs.push_back(pin);
+        }
+    }
     coinbase.id = computeTxId(coinbase);
 
     b.transactions.push_back(coinbase);
