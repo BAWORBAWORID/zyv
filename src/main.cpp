@@ -236,6 +236,16 @@ int main(int argc, char** argv) {
     if (cmd == "send" && argc > 4) {
         std::string from = argv[2], to = argv[3];
         uint64_t amount = parseAmount(argv[4]);
+        // arg ke-6 opsional: data/memo (maks 80 byte, disimpan hex on-chain)
+        std::string memo;
+        if (argc > 5) {
+            memo = argv[5];
+            if (memo.size() > MAX_TX_DATA_BYTES) {
+                std::cout << "Data/memo terlalu besar (maks " << MAX_TX_DATA_BYTES
+                          << " byte).\n";
+                return 1;
+            }
+        }
 
         auto w = loadWallet();
         KeyPair* kp = nullptr;
@@ -268,6 +278,7 @@ int main(int argc, char** argv) {
         uint64_t change = total - amount - TX_FEE;
         if (change > 0) tx.outputs.push_back({change, from});
         tx.timestamp = uint64_t(time(nullptr));
+        if (!memo.empty()) tx.data = memo;
         tx.id = computeTxId(tx);
         for (auto& in : tx.inputs) in.signature = signMessage(kp->privateKey, tx.id);
 

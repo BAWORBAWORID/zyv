@@ -201,7 +201,9 @@ std::string RpcServer::jsonTx(const std::string& txid) {
                       << ",\"address\":" << jstr(t.outputs[i].address)
                       << ",\"value\":\"" << formatCoin(t.outputs[i].amount) << "\"}";
                 }
-                o << "]}";
+                o << "]";
+                if (!t.data.empty()) o << ",\"data\":" << jstr(t.data);
+                o << "}";
                 return o.str();
             }
         }

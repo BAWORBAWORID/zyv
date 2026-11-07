@@ -88,6 +88,17 @@ void Blockchain::adjustDifficulty(uint64_t newTimestamp) {
 bool Blockchain::validateTx(const Transaction& tx, const UtxoSet& ut) const {
     if (tx.inputs.empty()) return false; // coinbase tidak masuk mempool/validasi tx biasa
 
+    // data/memo on-chain (OP_RETURN-style): maks 80 byte, karakter aman
+    if (!tx.data.empty()) {
+        if (tx.data.size() > MAX_TX_DATA_BYTES) return false;
+        for (char c : tx.data) {
+            unsigned char u = (unsigned char)c;
+            if (u < 32 || u == (unsigned char)'|' || u == (unsigned char)':' ||
+                u == 10 || u == 13)
+                return false;
+        }
+    }
+
     // txid harus cocok dengan isi (anti tamper).
     if (computeTxId(tx) != tx.id) return false;
 

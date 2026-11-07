@@ -40,6 +40,9 @@ struct Transaction {
     std::vector<TxIn> inputs;
     std::vector<TxOut> outputs;
     uint64_t timestamp = 0;
+    // Data bebas (OP_RETURN-style), maks MAX_TX_DATA_BYTES byte, hex.
+    // Tidak boleh menempel ke UTXO (unspendable), hanya memo/on-chain note.
+    std::string data;
 
     bool isCoinbase() const { return inputs.empty(); }
 
@@ -54,6 +57,7 @@ struct Transaction {
             s += std::to_string(out.amount) + ":" + out.address + "|";
         }
         s += std::to_string(timestamp);
+        if (!data.empty()) s += "|" + data;
         return s;
     }
 
@@ -75,6 +79,7 @@ struct Transaction {
             s += "|" + std::to_string(out.amount) + "|" + out.address;
         }
         s += "|" + std::to_string(timestamp);
+        if (!data.empty()) s += "|" + data;
         return s;
     }
 
@@ -105,6 +110,8 @@ struct Transaction {
             tx.outputs.push_back(out);
         }
         tx.timestamp = std::stoull(next());
+        // field opsional (backward-compatible): data hex jika ada
+        if (pos < line.size()) tx.data = next();
         return tx;
     }
 };
