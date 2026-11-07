@@ -2,6 +2,7 @@
 #include "sha256.h"
 #include "keys.h"
 #include <sstream>
+#include <cmath>
 #include <iostream>
 #include <iomanip>
 #include <set>
@@ -53,17 +54,34 @@ uint64_t Blockchain::rewardForHeight(uint64_t height) const {
 }
 
 void Blockchain::adjustDifficulty(uint64_t newTimestamp) {
-    if (chain_.size() <= 1) return;
-    if (chain_.size() % DIFFICULTY_ADJUST_INTERVAL != 0) return;
+    // Retarget ala Bitcoin: tiap DIFFICULTY_ADJUST_INTERVAL blok (2016),
+    // bandingkan waktu aktual vs target (2016 * 10 menit = 2 minggu).
+    // difficulty baru = difficulty lama * (aktual / target), clamp 4x.
+    if (chain_.size() < DIFFICULTY_ADJUST_INTERVAL + 1) return;
+    if ((chain_.size() - 1) % DIFFICULTY_ADJUST_INTERVAL != 0) return;
 
-    const Block& start = chain_[chain_.size() - DIFFICULTY_ADJUST_INTERVAL];
-    uint64_t expected = DIFFICULTY_ADJUST_INTERVAL * TARGET_BLOCK_TIME_SEC;
+    const Block& start = chain_[chain_.size() - 1 - DIFFICULTY_ADJUST_INTERVAL];
+    uint64_t target = DIFFICULTY_ADJUST_INTERVAL * TARGET_BLOCK_TIME_SEC;
     uint64_t actual = newTimestamp - start.timestamp;
+    if (actual == 0) actual = 1;
 
-    if (actual < expected / 2 && difficultyBits_ < 64) {
-        ++difficultyBits_;
-    } else if (actual > expected * 2 && difficultyBits_ > 1) {
-        --difficultyBits_;
+    // kerjakan di ruang target-work agar presisi: work = 2^bits
+    // faktor = actual / target  (actual lebih kecil → jaringan cepat → naikkan difficulty)
+    uint64_t newBits = difficultyBits_;
+    // skala: bits += log2(actual/target), dibatasi ±2 bit per retarget (clamp 4x)
+    double ratio = double(actual) / double(target);
+    // actual < target → jaringan cepat → difficulty NAIK (bits +)
+    // bits ≈ -log2(target) → perubahan bits = -log2(ratio)
+    long shift = -std::lround(std::log2(ratio));
+    if (shift > 2) shift = 2;   // maks 4x lebih sulit
+    if (shift < -2) shift = -2; // maks 4x lebih mudah
+    if (shift > 0 && newBits < 62) newBits += uint32_t(shift);
+    else if (shift < 0 && newBits > uint64_t(-shift)) newBits -= uint32_t(-shift);
+    if (newBits != difficultyBits_) {
+        std::cout << "[retarget] blok " << chain_.size() - 1
+                  << ": actual " << actual << "s vs target " << target
+                  << "s → difficulty " << difficultyBits_ << " → " << newBits << "\\n";
+        difficultyBits_ = uint32_t(newBits);
     }
 }
 
@@ -312,7 +330,11 @@ const Block& Blockchain::mineBlock(const std::vector<Transaction>& txs,
     const Block& prev = chain_.back();
     Block b;
     b.index = prev.index + 1;
-    b.timestamp = GENESIS_TIMESTAMP + uint64_t(chain_.size()) * TARGET_BLOCK_TIME_SEC;
+    // waktu nyata (retarget butuh durasi nyata antar blok); genesis deterministik.
+    // clamp: tidak boleh mundur & tidak boleh di atas GENESIS+... (genesis 2027 = masa depan utk tes)
+    uint64_t now = uint64_t(std::time(nullptr));
+    uint64_t prevTs = prev.timestamp;
+    b.timestamp = now > prevTs ? now : prevTs + 1;
     b.prevHash = prev.hash;
     b.difficulty = difficultyBits_;
 
