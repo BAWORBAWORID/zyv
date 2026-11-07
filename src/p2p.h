@@ -41,6 +41,10 @@ public:
 
     void stop();
 
+    // Sync satu sesi (CLI): konek ke host:port, minta blok dari height kita, terima & apply.
+    // Return: jumlah blok yang berhasil diterima (-1 bila konek gagal).
+    static int syncOneShot(const std::string& hostPort, Blockchain& bc);
+
 private:
     struct Peer {
         int fd = -1;

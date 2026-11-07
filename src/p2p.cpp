@@ -289,4 +289,70 @@ std::vector<std::string> P2PNode::peers() const {
     return res;
 }
 
+// ----------------------------------------------------------------------------
+// Sync satu sesi utk CLI (wallet/balance auto-sync): tanpa start node penuh.
+int P2PNode::syncOneShot(const std::string& hostPort, Blockchain& bc) {
+    size_t c = hostPort.find(':');
+    if (c == std::string::npos) return -1;
+    std::string host = hostPort.substr(0, c);
+    int port = std::stoi(hostPort.substr(c + 1));
+
+    addrinfo hints{}; hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res)
+        return -1;
+    int fd = socket(res->ai_family, res->ai_socktype, 0);
+    if (fd < 0 || connect(fd, res->ai_addr, res->ai_addrlen) < 0) { freeaddrinfo(res); return -1; }
+    freeaddrinfo(res);
+
+    auto sendLine = [&](const std::string& line) {
+        std::string out = line + "\n";
+        ssize_t n = send(fd, out.data(), out.size(), MSG_NOSIGNAL);
+        (void)n;
+    };
+    // handshake
+    sendLine("VERSION|" + std::to_string(bc.height()) + "|0");
+    // baca balasan + blok sampai timeout singkat
+    int received = 0;
+    std::string buf;
+    char tmp[65536];
+    // set recv timeout 5 dtk
+    timeval tv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    bool gotVerack = false;
+    bool requested = false;
+    while (true) {
+        ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;
+        buf.append(tmp, n);
+        size_t p;
+        while ((p = buf.find('\n')) != std::string::npos) {
+            std::string line = buf.substr(0, p);
+            buf.erase(0, p + 1);
+            if (line.rfind("VERACK|", 0) == 0) {
+                gotVerack = true;
+                size_t peerH = std::stoull(line.substr(7));
+                if (peerH > bc.height()) sendLine("GETBLOCKS|" + std::to_string(bc.height()));
+                else { close(fd); return received; }
+                requested = true;
+            } else if (line.rfind("BLOCK|", 0) == 0) {
+                try {
+                    std::string ser;
+                    for (char ch : line.substr(6)) ser += (ch == '\x01') ? '\n' : ch;
+                    std::istringstream bs(ser);
+                    Block b;
+                    if (readBlock(bs, b) && bc.addBlock(b)) received++;
+                } catch (...) {}
+            }
+        }
+        if (gotVerack && requested && buf.empty()) {
+            // tidak ada blok lagi di buffer — tunggu sebentar lalu keluar bila idle
+            // (server kirim maks 50 blok per GETBLOCKS; minta lagi bila masih kurang)
+            sendLine("GETBLOCKS|" + std::to_string(bc.height()));
+        }
+    }
+    close(fd);
+    return received;
+}
+
 } // namespace zyv

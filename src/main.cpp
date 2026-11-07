@@ -212,6 +212,34 @@ int main(int argc, char** argv) {
     loadMempool(mp);
     if (bc.height() == 0) bc.createGenesis();
 
+    // ---------------------------------------------------------------- sync (CLI)
+    // Sinkronisasi sekali jalan dengan server utama, lalu simpan rantai lokal.
+    // Dipakai eksplisit ("zyvor sync") dan otomatis sebelum wallet/balance.
+    auto autoSync = [&](bool verbose) {
+        size_t total = 0;
+        for (int round = 0; round < 8; round++) { // maks 8x50 = 400 blok per sesi
+            int n = P2PNode::syncOneShot(DEFAULT_SEED_NODE, bc);
+            if (n <= 0) break;
+            total += (size_t)n;
+        }
+        if (total > 0) {
+            saveChain(bc);
+            if (verbose)
+                std::cout << "[SYNC] " << total << " blok baru diterima dari "
+                          << DEFAULT_SEED_NODE << " (height=" << bc.height() << ")\n";
+        } else if (verbose) {
+            std::cout << "[SYNC] sudah terbaru (height=" << bc.height() << ")\n";
+        }
+        return total;
+    };
+
+    if (cmd == "sync") {
+        std::cout << "Sinkronisasi dengan " << DEFAULT_SEED_NODE << "...\n";
+        autoSync(true);
+        std::cout << "Height lokal: " << bc.height() << "\n";
+        return 0;
+    }
+
     // ---------------------------------------------------------------- keygen
     if (cmd == "keygen") {
         KeyPair kp = generateKeyPair();
@@ -225,6 +253,7 @@ int main(int argc, char** argv) {
 
     // ---------------------------------------------------------------- wallet
     if (cmd == "wallet") {
+        autoSync(false); // biar saldo tidak tertinggal dari server utama
         auto w = loadWallet();
         if (w.empty()) { std::cout << "Belum ada alamat. Jalankan: zyvor keygen\n"; return 0; }
         for (size_t i = 0; i < w.size(); i++) {
@@ -236,6 +265,7 @@ int main(int argc, char** argv) {
 
     // ---------------------------------------------------------------- balance
     if (cmd == "balance" && argc > 2) {
+        autoSync(false); // saldo selalu segar dari server utama
         std::cout << formatCoin(bc.balanceOf(argv[2])) << " " << TICKER << "\n";
         return 0;
     }
