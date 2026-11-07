@@ -166,6 +166,7 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         std::string h, port;
         std::getline(iss, h, '|');
         std::getline(iss, port);
+        std::cout << "[P2P] peer " << fromAddr << " height=" << h << "\n";
         sendLine(fd, "VERACK|" + std::to_string(bc_.height()));
         // kalau peer lebih maju, minta blok
         if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
