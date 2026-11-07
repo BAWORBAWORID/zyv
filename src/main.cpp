@@ -369,12 +369,16 @@ int main(int argc, char** argv) {
             while (std::getline(ss, s, ',')) if (!s.empty()) seeds.push_back(s);
         }
         if (seeds.empty()) seeds.push_back(DEFAULT_SEED_NODE); // node.zyvor.my.id:9933
-        for (const auto& s : seeds) p2p.connectTo(s);
         // simpan rantai berkala (blok yang diterima via P2P ikut persist ke disk)
+        // + reconnect otomatis ke seed kalau semua koneksi hilang
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(30));
             saveChain(bc);
             saveMempool(mp);
+            if (p2p.peers().empty()) {
+                std::cout << "[P2P] tidak ada peer - mencoba reconnect seed...\n";
+                for (const auto& s : seeds) p2p.connectTo(s);
+            }
         }
     }
 
