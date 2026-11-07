@@ -192,6 +192,8 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         Block b;
         try { b = parseBlockLine(ser); } catch (...) { return; }
         if (bc_.addBlock(b)) {
+            std::cout << "[SYNC] blok #" << b.index << " diterima (height="
+                      << bc_.height() << ")\n";
         }
     }
     else if (type == "TX") {
