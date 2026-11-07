@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iterator>
+#include <algorithm>
 
 namespace zyv {
 
@@ -148,6 +149,9 @@ std::string RpcServer::route(const std::string& method, const std::string& path,
 
     // ------------------------------------------------------------ POST /api/send?from=X&to=Y&amount=Z&data=pesan
     if (path == "/api/send" && method == "POST") return jsonSend(body, query);
+
+    // ------------------------------------------------------------ GET /api/messages?addr=X[&limit=N]
+    if (path == "/api/messages") return jsonMessages(query);
 
     // ------------------------------------------------------------ GET /api/mine?addr=X&n=1
     if (path == "/api/mine") return jsonMine(query);
@@ -423,6 +427,78 @@ std::string RpcServer::jsonSend(const std::string& body, const std::string& quer
       << ",\"amount\":\"" << formatCoin(amount) << "\""
       << ",\"fee\":\"" << formatCoin(fee) << "\""
       << ",\"data\":" << jstr(tx.data) << "}";
+    return o.str();
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/messages?addr=X[&limit=N][&dir=in|out|both]
+// Pesan (tx ber-data) yang ditujukan ke / dikirim dari addr.
+//   in  : hanya pesan masuk (output tx -> addr)
+//   out : hanya pesan keluar (input pubkey -> addr)
+//   both: keduanya (default)
+// Pesan mempool ikut ditampilkan dengan status "pending".
+std::string RpcServer::jsonMessages(const std::string& query) {
+    std::string addr, dir = "both";
+    int limit = 50;
+    std::istringstream qs(query);
+    std::string kv;
+    while (std::getline(qs, kv, '&')) {
+        size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = kv.substr(0, eq), v = urlDecode(kv.substr(eq + 1));
+        if (k == "addr") addr = v;
+        else if (k == "limit") limit = std::stoi(v);
+        else if (k == "dir") dir = v;
+    }
+    if (addr.empty()) return jsonErr("butuh addr");
+    if (limit < 1) limit = 1;
+    if (limit > 500) limit = 500;
+
+    struct Msg { std::string from, to, data, txid, status; uint64_t ts; int block; };
+    std::vector<Msg> msgs;
+
+    auto consider = [&](const Transaction& t, int block, const std::string& status) {
+        if (t.data.empty() || t.isCoinbase()) return;
+        // pengirim = alamat dari pubkey input pertama
+        std::string from = t.inputs.empty() ? "" : publicKeyToAddress(t.inputs[0].pubkey);
+        bool isIn = false, isOut = (from == addr);
+        for (const auto& o : t.outputs) if (o.address == addr) { isIn = true; break; }
+        bool take = (dir == "in" && isIn) || (dir == "out" && isOut) ||
+                    (dir == "both" && (isIn || isOut));
+        if (!take) return;
+        // penerima utama = output pertama yang bukan kembalian ke pengirim
+        std::string to = from;
+        for (const auto& o : t.outputs) {
+            if (o.address != from) { to = o.address; break; }
+        }
+        msgs.push_back({from, to, t.data, t.id, status, t.timestamp, block});
+    };
+
+    for (const auto& b : bc_.chain())
+        for (const auto& t : b.transactions)
+            consider(t, (int)b.index, "confirmed");
+    for (const auto& t : mp_.all())
+        consider(t, -1, "pending");
+
+    // terbaru dulu (blok tertinggi dulu; on-chain sudah urut, tinggal urutkan global by ts desc)
+    std::sort(msgs.begin(), msgs.end(), [](const Msg& a, const Msg& b) {
+        return a.ts != b.ts ? a.ts > b.ts : a.block > b.block;
+    });
+    if ((int)msgs.size() > limit) msgs.resize(limit);
+
+    std::ostringstream o;
+    o << "{\"addr\":" << jstr(addr) << ",\"count\":" << msgs.size() << ",\"messages\":[";
+    for (size_t i = 0; i < msgs.size(); i++) {
+        if (i) o << ",";
+        o << "{\"from\":" << jstr(msgs[i].from)
+          << ",\"to\":" << jstr(msgs[i].to)
+          << ",\"data\":" << jstr(msgs[i].data)
+          << ",\"txid\":" << jstr(msgs[i].txid)
+          << ",\"status\":" << jstr(msgs[i].status)
+          << ",\"time\":" << msgs[i].ts
+          << ",\"block\":" << msgs[i].block << "}";
+    }
+    o << "]}";
     return o.str();
 }
 
