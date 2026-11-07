@@ -178,6 +178,8 @@ static void usage() {
         "  zyvor validate                Validasi integritas rantai\n"
         "  zyvor keygen                  Buat alamat baru (ECDSA)\n"
         "  zyvor wallet                  Daftar alamat + saldo\n"
+        "  zyvor addr [privkey]          Alamat+pubkey dari wallet.dat / derive privkey\n"
+        "  zyvor verify <privkey> <addr> Cek privkey cocok dengan alamat\n"
         "  zyvor balance <alamat>        Saldo sebuah alamat\n"
         "  zyvor send <dari> <ke> <amt>  Kirim ZYVC (mis. 10.5)\n"
         "  zyvor mempool                 Daftar transaksi menunggu\n"
