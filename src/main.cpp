@@ -171,7 +171,7 @@ static void printBlock(const Block& b) {
 
 static void usage() {
     std::cout <<
-        "Zyvor Coin (ZYVC) — node inti (C++)\n\n"
+        "Zyvor Coin (ZYVC) v0.0.1 — node inti (C++)\n\n"
         "Penggunaan:\n"
         "  zyvor info                    Info koin + supply\n"
         "  zyvor chain                   Tampilkan seluruh rantai\n"

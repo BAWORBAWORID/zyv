@@ -14,6 +14,9 @@ inline const std::string SYMBOL    = "\xC6\xB5"; // Ƶ
 inline const std::string CREATOR   = "Zyvor";
 
 // --- Supply ---
+// Versi node/CLI
+constexpr const char* ZYVOR_VERSION = "0.0.1";
+
 constexpr uint64_t MAX_SUPPLY          = 21000000;                    // 21 juta ZYVC
 constexpr uint64_t SATOSHIS_PER_COIN   = 100000000;                   // 1 ZYVC = 100 juta zyvor
 constexpr uint64_t MAX_SUPPLY_ZYVOR    = MAX_SUPPLY * SATOSHIS_PER_COIN; // 2.1e15 zyvor
