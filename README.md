@@ -84,6 +84,8 @@ Semua response JSON. Server bind ke `127.0.0.1` (tidak terekspos publik).
 | `GET /api/mempool` | Isi mempool |
 | `GET /api/peers` | Daftar peer P2P |
 | `POST /api/sendrawtx` | Body = serialisasi transaksi; validasi + relay ke peer |
+| `GET /api/messages?addr=X` | Baca pesan (tx ber-data) per alamat; `&dir=in|out|both&limit=N`; status confirmed/pending |
+| `POST /api/send?from=X&to=Y&amount=Z` | Kirim dari wallet node; memo opsional via `&data=` atau body POST |
 | `GET /api/mine?addr=X&n=1` | Tambang N blok (maks 100), broadcast ke peer |
 
 Contoh:

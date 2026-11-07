@@ -320,6 +320,40 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---------------------------------------------------------------- inbox (baca pesan masuk on-chain)
+    if (cmd == "inbox" && argc > 2) {
+        std::string me = argv[2];
+        auto w = loadWallet();
+        bool mine = false;
+        for (const auto& k : w) if (k.address == me) { mine = true; break; }
+        if (!mine) std::cout << "(catatan: alamat tidak ada di wallet ini - tetap dibaca)\n";
+
+        // kumpulkan semua tx ber-data dari rantai (terbaru dulu)
+        struct Msg { std::string from, data; int block; uint64_t ts; };
+        std::vector<Msg> in;
+        const auto& chain = bc.chain();
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            for (const auto& t : it->transactions) {
+                if (t.data.empty() || t.isCoinbase()) continue;
+                bool toMe = false;
+                for (const auto& o : t.outputs) if (o.address == me) { toMe = true; break; }
+                if (!toMe) continue;
+                std::string from = t.inputs.empty() ? "?" : publicKeyToAddress(t.inputs[0].pubkey);
+                in.push_back({from, t.data, (int)it->index, t.timestamp});
+            }
+        }
+        if (in.empty()) { std::cout << "Inbox kosong.\n"; return 0; }
+        std::cout << "Inbox " << me << " (" << in.size() << " pesan):\n";
+        for (const auto& m : in) {
+            std::time_t tt = (std::time_t)m.ts;
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M", std::localtime(&tt));
+            std::cout << "  blok " << m.block << "  " << buf << "  dari " << m.from << "\n";
+            std::cout << "    > " << m.data << "\n";
+        }
+        return 0;
+    }
+
     // ---------------------------------------------------------------- mine
     if (cmd == "mine") {
         long long n = 1;
