@@ -30,6 +30,7 @@ public:
 
     bool start(uint16_t port);
     void stop();
+    bool running() const { return running_.load(); }
 
 private:
     void acceptLoop();

@@ -493,6 +493,15 @@ int main(int argc, char** argv) {
     if (cmd == "node") {
         uint16_t p2pPort = (argc > 2) ? uint16_t(std::stoi(argv[2])) : 9933;
 
+        // Auto-sync SEBELUM node jalan (sama seperti `zyvor sync`) — rantai lokal
+        // langsung terbaru, jaringan saling terhubung tanpa langkah manual.
+        {
+            std::cout << "Sinkronisasi dengan " << DEFAULT_SEED_NODE << "...\n";
+            int n = P2PNode::syncOneShot(DEFAULT_SEED_NODE, bc);
+            if (n > 0) { saveChain(bc); saveMempool(mp); }
+            std::cout << "Height lokal: " << bc.height() << "\n";
+        }
+
         P2PNode p2p(bc, mp);
         RpcServer rpc(bc, mp, p2p);
         bool p2pOk = p2p.start(p2pPort);
@@ -513,7 +522,24 @@ int main(int argc, char** argv) {
         }
         uint16_t rpcPort = 8933;
         if (const char* env = std::getenv("ZYVOR_RPC_PORT")) rpcPort = uint16_t(std::stoi(env));
-        if (!rpc.start(rpcPort)) { std::cout << "Gagal bind RPC port " << rpcPort << "\n"; return 1; }
+        if (!rpc.start(rpcPort)) {
+            for (int i = 0; i < 3 && !rpc.start(rpcPort); ++i) {
+                std::cout << "[RPC] port " << rpcPort << " terpakai, tunggu 10 detik... (" << (i+1) << "/3)\n";
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+            }
+            if (!rpc.running()) {
+                // fallback: port acak tinggi supaya node tetap hidup
+                rpcPort = 20000 + uint16_t(std::rand() % 20000);
+                if (!rpc.start(rpcPort)) {
+                    std::cout << "[RPC] tetap gagal — lanjut TANPA RPC (P2P & mining tetap jalan)\n";
+                    rpcPort = 0;
+                } else {
+                    std::cout << "[RPC] fallback ke port acak " << rpcPort << "\n";
+                }
+            } else {
+                std::cout << "[RPC] berhasil bind port " << rpcPort << " setelah retry\n";
+            }
+        }
 
         std::cout << "Node Zyvor jalan. Ctrl+C untuk berhenti.\n";
         std::cout << "  P2P : " << p2pPort << "   RPC: http://127.0.0.1:" << rpcPort << "\n";
