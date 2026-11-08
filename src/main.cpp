@@ -495,7 +495,22 @@ int main(int argc, char** argv) {
 
         P2PNode p2p(bc, mp);
         RpcServer rpc(bc, mp, p2p);
-        if (!p2p.start(p2pPort)) { std::cout << "Gagal bind P2P port " << p2pPort << "\n"; return 1; }
+        bool p2pOk = p2p.start(p2pPort);
+        if (!p2pOk && p2pPort != 0) {
+            // Bind gagal (proses lama masih hidup / TIME_WAIT / Android restrict).
+            // Retry 3x dulu (TIME_WAIT biasa lewat dalam 60s), lalu fallback client-only.
+            for (int i = 0; i < 3 && !p2pOk; ++i) {
+                std::cout << "[P2P] port " << p2pPort << " terpakai, tunggu 20 detik lalu coba lagi... (" << (i+1) << "/3)\n";
+                std::this_thread::sleep_for(std::chrono::seconds(20));
+                p2pOk = p2p.start(p2pPort);
+            }
+            if (!p2pOk) {
+                std::cout << "[P2P] tetap gagal bind port " << p2pPort
+                          << " — lanjut sebagai CLIENT-ONLY (tetap sync, mining & kirim tx;\n"
+                          << "      cuma tidak menerima koneksi masuk). Gunakan port lain bila ingin menerima peer.\n";
+                p2p.start(0); // port acak — node tetap berfungsi penuh sebagai klien
+            }
+        }
         uint16_t rpcPort = 8933;
         if (const char* env = std::getenv("ZYVOR_RPC_PORT")) rpcPort = uint16_t(std::stoi(env));
         if (!rpc.start(rpcPort)) { std::cout << "Gagal bind RPC port " << rpcPort << "\n"; return 1; }
