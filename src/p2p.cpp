@@ -330,6 +330,7 @@ int P2PNode::syncOneShot(const std::string& hostPort, Blockchain& bc) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     bool gotVerack = false;
     bool requested = false;
+    int idleRounds = 0;
     while (true) {
         ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
         if (n <= 0) break;
@@ -355,8 +356,10 @@ int P2PNode::syncOneShot(const std::string& hostPort, Blockchain& bc) {
             }
         }
         if (gotVerack && requested && buf.empty()) {
-            // tidak ada blok lagi di buffer — tunggu sebentar lalu keluar bila idle
-            // (server kirim maks 50 blok per GETBLOCKS; minta lagi bila masih kurang)
+            // tidak ada blok lagi di buffer — server sudah tidak mengirim apa pun:
+            // tandai idle & keluar (server kirim maks 50 blok per ronde; ronde berikutnya
+            // via auto-reconnect/retry node, jangan spin GETBLOCKS tanpa akhir)
+            if (idleRounds++ >= 1) break;
             sendLine("GETBLOCKS|" + std::to_string(bc.height()));
         }
     }

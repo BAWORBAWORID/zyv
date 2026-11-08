@@ -270,19 +270,27 @@ bool Blockchain::addBlock(const Block& b) {
     const Block& tip = chain_.back();
 
     // Validasi timestamp (anti time-attack):
-    // 1) tidak boleh > 2 jam di masa depan
+    // 1) tidak boleh > 2 jam di masa depan — basis = max(waktu sekarang, timestamp tip).
+    // Genesis ber-timestamp masa depan (2027) → blok lama diterima selama <= tip + 2 jam.
     {
         uint64_t now = uint64_t(std::time(nullptr));
-        if (b.timestamp > now + MAX_FUTURE_TS_SEC) return false;
+        uint64_t basis = std::max(now, tip.timestamp);
+        if (b.timestamp > basis + MAX_FUTURE_TS_SEC) return false;
     }
     // 2) tidak boleh lebih tua dari median 11 blok terakhir
+    // CATATAN: genesis ber-timestamp masa depan (2027) → blok riil awal lebih lama dari genesis.
+    // Cek median hanya aktif jika genesis sudah lewat waktunya (rata-rata rantai normal).
     {
-        std::vector<uint64_t> ts;
-        size_t start = chain_.size() > MEDIAN_TS_SPAN ? chain_.size() - MEDIAN_TS_SPAN : 0;
-        for (size_t i = start; i < chain_.size(); i++) ts.push_back(chain_[i].timestamp);
-        std::sort(ts.begin(), ts.end());
-        uint64_t median = ts.empty() ? 0 : ts[ts.size() / 2];
-        if (b.timestamp <= median) return false;
+        uint64_t now = uint64_t(std::time(nullptr));
+        bool genesisPast = chain_.front().timestamp <= now;
+        if (genesisPast) {
+            std::vector<uint64_t> ts;
+            size_t start = chain_.size() > MEDIAN_TS_SPAN ? chain_.size() - MEDIAN_TS_SPAN : 0;
+            for (size_t i = start; i < chain_.size(); i++) ts.push_back(chain_[i].timestamp);
+            std::sort(ts.begin(), ts.end());
+            uint64_t median = ts.empty() ? 0 : ts[ts.size() / 2];
+            if (b.timestamp <= median) return false;
+        }
     }
 
     // Kasus 1: blok menyambung ke tip -> extend.
