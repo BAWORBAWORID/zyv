@@ -60,9 +60,18 @@ bool P2PNode::start(uint16_t port) {
         return false;
     }
 
+    // Ambil port AKTUAL (port 0 = OS pilih acak)
+    sockaddr_in actual{};
+    socklen_t alen = sizeof(actual);
+    if (getsockname(listenFd_, (sockaddr*)&actual, &alen) == 0)
+        listenPort_ = ntohs(actual.sin_port);
+
     running_ = true;
     std::thread([this] { acceptLoop(); }).detach();
-    std::cout << "[P2P] listening on port " << port << "\n";
+    if (port == 0)
+        std::cout << "[P2P] listening on port " << listenPort_ << " (acak, client-mode)\n";
+    else
+        std::cout << "[P2P] listening on port " << listenPort_ << "\n";
     return true;
 }
 
