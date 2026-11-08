@@ -573,6 +573,14 @@ std::string RpcServer::jsonMine(const std::string& query) {
         for (size_t t = 1; t < b.transactions.size(); t++) ids.push_back(b.transactions[t].id);
         mp_.remove(ids);
         p2p_.broadcastBlock(b);
+        // buang tx stale setelah tiap blok
+        {
+            std::vector<Transaction> pool = mp_.all();
+            if (bc_.purgeMempool(pool) > 0) {
+                mp_.clear();
+                for (const auto& t : pool) mp_.add(t);
+            }
+        }
         if (i) o << ",";
         o << "{\"height\":" << b.index << ",\"hash\":" << jstr(b.hash)
           << ",\"txs\":" << b.transactions.size() << "}";

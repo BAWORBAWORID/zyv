@@ -460,6 +460,16 @@ int main(int argc, char** argv) {
             }
             mp.remove(included);
         }
+        // buang tx stale (input sudah terpakai tx lain / UTXO hilang)
+        {
+            std::vector<Transaction> pool = mp.all();
+            size_t stale = bc.purgeMempool(pool);
+            if (stale > 0) {
+                mp.clear();
+                for (const auto& t : pool) mp.add(t);
+                std::cout << "Mempool: " << stale << " tx stale dibuang\n";
+            }
+        }
         saveChain(bc);
         saveMempool(mp);
         std::cout << "Rantai disimpan (" << CHAIN_FILE << "), tinggi " << bc.height() << "\n";

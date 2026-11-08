@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include "block.h"
@@ -35,9 +36,18 @@ public:
     // Validasi seluruh rantai + rebuild UTXO set (mutasi utxo_ hanya jika valid).
     bool validateChain();
 
+    // Checkpoint anti-reorg: hash di tinggi tertentu yang diketahui benar.
+    // Blok pada tinggi checkpoint yang hash-nya berbeda = rantai palsu, ditolak.
+    static const std::map<uint64_t, std::string>& checkpoints();
+    static bool checkpointMismatch(uint64_t index, const std::string& hash);
+
     // Validasi satu transaksi terhadap UTXO saat ini (signature + no double-spend).
     bool validateTx(const Transaction& tx) const { return validateTx(tx, utxo_); }
     bool validateTx(const Transaction& tx, const UtxoSet& ut) const;
+
+    // Buang tx mempool yang tidak valid lagi terhadap UTXO saat ini.
+    // Return jumlah yang dibuang.
+    size_t purgeMempool(std::vector<Transaction>& pool) const;
 
     // Tambahkan blok eksternal (dari jaringan) bila valid & menyambung ke tip.
     // Bila blok menyambung ke blok lama (fork), disimpan di orphan pool;

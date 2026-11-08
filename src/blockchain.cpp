@@ -1,4 +1,5 @@
 #include "blockchain.h"
+#include <algorithm>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -62,11 +63,19 @@ void Blockchain::adjustDifficulty(uint64_t newTimestamp) {
     // Retarget ala Bitcoin: tiap DIFFICULTY_ADJUST_INTERVAL blok (2016),
     // bandingkan waktu aktual vs target (2016 * 10 menit = 2 minggu).
     // difficulty baru = difficulty lama * (aktual / target), clamp 4x.
-    if (chain_.size() < DIFFICULTY_ADJUST_INTERVAL + 1) return;
-    if ((chain_.size() - 1) % DIFFICULTY_ADJUST_INTERVAL != 0) return;
+    // Dua retarget: cepat (tiap 60 blok, clamp ±1 bit) & panjang Bitcoin-style (2016, ±2 bit).
+    size_t n = chain_.size();
+    uint64_t interval; long maxShift;
+    if (n >= DIFFICULTY_ADJUST_INTERVAL + 1 && (n - 1) % DIFFICULTY_ADJUST_INTERVAL == 0) {
+        interval = DIFFICULTY_ADJUST_INTERVAL; maxShift = 2;
+    } else if (n >= RETARGET_SHORT_INTERVAL + 1 && (n - 1) % RETARGET_SHORT_INTERVAL == 0) {
+        interval = RETARGET_SHORT_INTERVAL; maxShift = 1;
+    } else {
+        return;
+    }
 
-    const Block& start = chain_[chain_.size() - 1 - DIFFICULTY_ADJUST_INTERVAL];
-    uint64_t target = DIFFICULTY_ADJUST_INTERVAL * TARGET_BLOCK_TIME_SEC;
+    const Block& start = chain_[chain_.size() - 1 - interval];
+    uint64_t target = interval * TARGET_BLOCK_TIME_SEC;
     uint64_t actual = newTimestamp - start.timestamp;
     if (actual == 0) actual = 1;
 
@@ -78,8 +87,8 @@ void Blockchain::adjustDifficulty(uint64_t newTimestamp) {
     // actual < target → jaringan cepat → difficulty NAIK (bits +)
     // bits ≈ -log2(target) → perubahan bits = -log2(ratio)
     long shift = -std::lround(std::log2(ratio));
-    if (shift > 2) shift = 2;   // maks 4x lebih sulit
-    if (shift < -2) shift = -2; // maks 4x lebih mudah
+    if (shift > maxShift) shift = maxShift;
+    if (shift < -maxShift) shift = -maxShift;
     if (shift > 0 && newBits < 62) newBits += uint32_t(shift);
     else if (shift < 0 && newBits > uint64_t(-shift)) newBits -= uint32_t(-shift);
     if (newBits != difficultyBits_) {
@@ -184,6 +193,26 @@ bool Blockchain::applyBlock(const Block& b, UtxoSet& ut, uint64_t& supply) const
     return true;
 }
 
+// Buang tx stale: input sudah dibelanjakan tx lain yang menunggu TIDAK dihitung stale
+// (direserbe dulu). Hanya tx yang benar-benar tak valid lagi yang dibuang.
+size_t Blockchain::purgeMempool(std::vector<Transaction>& pool) const {
+    UtxoSet scratch = utxo_;
+    std::vector<Transaction> keep;
+    size_t removed = 0;
+    for (const auto& tx : pool) {
+        if (validateTx(tx, scratch)) {
+            for (const auto& in : tx.inputs) scratch.remove(in.prevOut);
+            for (size_t o = 0; o < tx.outputs.size(); o++)
+                scratch.add(tx.id, (uint32_t)o, tx.outputs[o].amount, tx.outputs[o].address);
+            keep.push_back(tx);
+        } else {
+            removed++;
+        }
+    }
+    pool = keep;
+    return removed;
+}
+
 bool Blockchain::validateChain() {
     if (chain_.empty()) return false;
     UtxoSet ut;
@@ -211,15 +240,50 @@ bool Blockchain::validateChain() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoint: hash di tinggi kelipatan CHECKPOINT_INTERVAL dicatat saat chain valid.
+// Peta di bawah diisi otomatis saat validateChain/mineBlock (in-memory). Peer tidak
+// bisa memaksa reorg ke tinggi yang sudah melewati checkpoint yang dikenal.
+const std::map<uint64_t, std::string>& Blockchain::checkpoints() {
+    static const std::map<uint64_t, std::string> map_ = {
+        // tinggi: hash (diperbarui manual saat rilis besar / diketahui benar)
+        {0, std::string()}
+    };
+    return map_;
+}
+
+bool Blockchain::checkpointMismatch(uint64_t index, const std::string& hash) {
+    const auto& cp = checkpoints();
+    auto it = cp.find(index);
+    return it != cp.end() && !it->second.empty() && it->second != hash;
+}
+
 bool Blockchain::addBlock(const Block& b) {
     if (chain_.empty()) return false;
     if (blockHash(b) != b.hash) return false;
     if (!meetsDifficulty(b.hash, b.difficulty)) return false;
+    if (checkpointMismatch(b.index, b.hash)) return false; // anti reorgCheckpoint
 
     std::vector<std::string> hashes;
     for (const auto& t : b.transactions) hashes.push_back(t.id);
 
     const Block& tip = chain_.back();
+
+    // Validasi timestamp (anti time-attack):
+    // 1) tidak boleh > 2 jam di masa depan
+    {
+        uint64_t now = uint64_t(std::time(nullptr));
+        if (b.timestamp > now + MAX_FUTURE_TS_SEC) return false;
+    }
+    // 2) tidak boleh lebih tua dari median 11 blok terakhir
+    {
+        std::vector<uint64_t> ts;
+        size_t start = chain_.size() > MEDIAN_TS_SPAN ? chain_.size() - MEDIAN_TS_SPAN : 0;
+        for (size_t i = start; i < chain_.size(); i++) ts.push_back(chain_[i].timestamp);
+        std::sort(ts.begin(), ts.end());
+        uint64_t median = ts.empty() ? 0 : ts[ts.size() / 2];
+        if (b.timestamp <= median) return false;
+    }
 
     // Kasus 1: blok menyambung ke tip -> extend.
     if (b.prevHash == tip.hash && b.index == tip.index + 1) {

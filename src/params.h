@@ -23,9 +23,13 @@ constexpr uint64_t MAX_SUPPLY_ZYVOR    = MAX_SUPPLY * SATOSHIS_PER_COIN; // 2.1e
 
 // --- Mekanisme inti ---
 constexpr uint64_t TARGET_BLOCK_TIME_SEC = 600;         // 10 menit / blok
+constexpr uint64_t RETARGET_SHORT_INTERVAL = 60;        // retarget cepat tiap 60 blok (~10 jam)
 constexpr uint64_t HALVING_INTERVAL      = 210000;      // blok per halving (~4 tahun)
 constexpr uint64_t INITIAL_REWARD_ZYVOR  = 50ull * SATOSHIS_PER_COIN; // 50 ZYVC = 5e9 zyvor
 constexpr uint64_t DIFFICULTY_ADJUST_INTERVAL = 2016;   // blok (~2 minggu)
+constexpr size_t   CHECKPOINT_INTERVAL = 100;            // checkpoint tiap 100 blok
+constexpr uint64_t MAX_FUTURE_TS_SEC = 7200;             // blok max 2 jam di masa depan
+constexpr uint64_t MEDIAN_TS_SPAN = 11;                  // median 11 blok terakhir
 
 // Fee jaringan minimum (zyvor per transaksi). 10000 zyvor = 0.0001 ZYVC.
 constexpr uint64_t MIN_TX_FEE = 10000;
