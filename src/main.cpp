@@ -188,7 +188,7 @@ static void usage() {
         "                                Miner daemon (poll mempool, auto-mine)\n"
         "  zyvor miner pool <url> <worker> <payout_addr>\n"
         "                                Worker stratum: share ke pool, PPLNS payout\n"
-        "  zyvor node [p2p_port]         Jalankan node P2P + RPC (default 9933)\n"
+        "  zyvor node [port]             Jalankan node (default: port acak; isi port utk menerima peer)\n"
         "  zyvor connect <ip:port> ...   Sambungkan ke peer\n"
         "  zyvor hash <teks>             SHA-256\n"
         "  zyvor reset                   Hapus semua data lokal\n";
@@ -491,7 +491,8 @@ int main(int argc, char** argv) {
 
     // ---------------------------------------------------------------- node (P2P + RPC daemon)
     if (cmd == "node") {
-        uint16_t p2pPort = (argc > 2) ? uint16_t(std::stoi(argv[2])) : 9933;
+        // Default: port acak (client-mode ramah HP/PC). Custom: ./zyvor node <port>
+        uint16_t p2pPort = (argc > 2) ? uint16_t(std::stoi(argv[2])) : 0;
 
         // Auto-sync SEBELUM node jalan (sama seperti `zyvor sync`) — rantai lokal
         // langsung terbaru, jaringan saling terhubung tanpa langkah manual.
@@ -504,45 +505,24 @@ int main(int argc, char** argv) {
 
         P2PNode p2p(bc, mp);
         RpcServer rpc(bc, mp, p2p);
-        bool p2pOk = p2p.start(p2pPort);
-        if (!p2pOk && p2pPort != 0) {
-            // Bind gagal (proses lama masih hidup / TIME_WAIT / Android restrict).
-            // Retry 3x dulu (TIME_WAIT biasa lewat dalam 60s), lalu fallback client-only.
-            for (int i = 0; i < 3 && !p2pOk; ++i) {
-                std::cout << "[P2P] port " << p2pPort << " terpakai, tunggu 20 detik lalu coba lagi... (" << (i+1) << "/3)\n";
-                std::this_thread::sleep_for(std::chrono::seconds(20));
-                p2pOk = p2p.start(p2pPort);
-            }
-            if (!p2pOk) {
-                std::cout << "[P2P] tetap gagal bind port " << p2pPort
-                          << " — lanjut sebagai CLIENT-ONLY (tetap sync, mining & kirim tx;\n"
-                          << "      cuma tidak menerima koneksi masuk). Gunakan port lain bila ingin menerima peer.\n";
-                p2p.start(0); // port acak — node tetap berfungsi penuh sebagai klien
-            }
+        if (!p2p.start(p2pPort)) {
+            std::cout << "[P2P] port " << p2pPort << " terpakai — lanjut dengan port acak (client-mode)\n";
+            p2p.start(0); // node tetap berfungsi penuh sebagai klien
         }
         uint16_t rpcPort = 8933;
         if (const char* env = std::getenv("ZYVOR_RPC_PORT")) rpcPort = uint16_t(std::stoi(env));
         if (!rpc.start(rpcPort)) {
-            for (int i = 0; i < 3 && !rpc.start(rpcPort); ++i) {
-                std::cout << "[RPC] port " << rpcPort << " terpakai, tunggu 10 detik... (" << (i+1) << "/3)\n";
-                std::this_thread::sleep_for(std::chrono::seconds(10));
-            }
-            if (!rpc.running()) {
-                // fallback: port acak tinggi supaya node tetap hidup
-                rpcPort = 20000 + uint16_t(std::rand() % 20000);
-                if (!rpc.start(rpcPort)) {
-                    std::cout << "[RPC] tetap gagal — lanjut TANPA RPC (P2P & mining tetap jalan)\n";
-                    rpcPort = 0;
-                } else {
-                    std::cout << "[RPC] fallback ke port acak " << rpcPort << "\n";
-                }
+            rpcPort = 20000 + uint16_t(std::rand() % 20000); // langsung port acak
+            if (!rpc.start(rpcPort)) {
+                std::cout << "[RPC] tetap gagal — lanjut TANPA RPC (P2P & mining tetap jalan)\n";
+                rpcPort = 0;
             } else {
-                std::cout << "[RPC] berhasil bind port " << rpcPort << " setelah retry\n";
+                std::cout << "[RPC] fallback ke port acak " << rpcPort << "\n";
             }
         }
 
         std::cout << "Node Zyvor jalan. Ctrl+C untuk berhenti.\n";
-        std::cout << "  P2P : " << p2pPort << "   RPC: http://127.0.0.1:" << rpcPort << "\n";
+        std::cout << "  P2P : " << p2p.port() << "   RPC: http://127.0.0.1:" << rpcPort << "\n";
         // sambungkan ke peer awal: argumen > env ZYVOR_SEEDS > DNS seed default
         std::vector<std::string> seeds;
         for (int i = 3; i < argc; i++) seeds.push_back(argv[i]);

@@ -28,6 +28,7 @@ public:
 
     // Mulai listen di port `port` (thread terpisah). Return false bila gagal bind.
     bool start(uint16_t port);
+    uint16_t port() const { return listenPort_; }
 
     // Sambungkan ke peer `ip:port` dan lakukan handshake.
     bool connectTo(const std::string& ipPort);
