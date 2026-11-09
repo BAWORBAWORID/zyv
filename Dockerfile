@@ -2,14 +2,10 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Dependensi build: g++ + OpenSSL dev + curl
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    g++ \
-    make \
-    libssl-dev \
-    libcurl4-openssl-dev \
-    ca-certificates \
-    curl \
+# Dependensi build: g++ + OpenSSL dev + curl (retry bila mirror gagal)
+RUN apt-get update \
+ && (apt-get install -y --no-install-recommends g++ make libssl-dev libcurl4-openssl-dev ca-certificates curl \
+ || (apt-get update && apt-get install -y --no-install-recommends g++ make libssl-dev libcurl4-openssl-dev ca-certificates curl)) \
  && rm -rf /var/lib/apt/lists/*
 
 # Install bore binary untuk opsi relay tunnel
