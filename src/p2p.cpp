@@ -10,6 +10,7 @@
 #include <sstream>
 #include <sys/socket.h>
 #include <thread>
+#include <chrono>
 #include <unistd.h>
 
 namespace zyv {
@@ -68,6 +69,7 @@ bool P2PNode::start(uint16_t port) {
 
     running_ = true;
     std::thread([this] { acceptLoop(); }).detach();
+    std::thread([this] { syncMonitorLoop(); }).detach();
     if (port == 0)
         std::cout << "[P2P] listening on port " << listenPort_ << " (acak, client-mode)\n";
     else
@@ -166,6 +168,43 @@ void P2PNode::peerLoop(int fd, const std::string& addr) {
     std::cout << "[P2P] peer " << addr << " putus\n";
 }
 
+// Monitor sinkron di latar belakang: tiap 15 detik tanya height tiap peer.
+// Peer yang height-nya TIDAK SAMA dengan kita 2 putaran berturut-turut → dianggap
+// tidak sinkron → koneksi diputus. Peer yang lebih maju tetap dipertahankan
+// (kita yang akan sync dari dia via GETBLOCKS).
+void P2PNode::syncMonitorLoop() {
+    int round = 0;
+    while (running_) {
+        for (int i = 0; i < 15 && running_; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!running_) break;
+        ++round;
+        uint64_t myH = bc_.height();
+        std::vector<int> drop;
+        {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (auto& p : peers_) {
+                // tandai: kirim SYNC (balasan SYNCACK akan memperbarui lastHeight)
+                sendLine(p.fd, "SYNC|" + std::to_string(myH));
+                if (round > 1 && p.lastHeight != 0 && p.lastHeight != myH && p.lastHeight < myH)
+                    drop.push_back(p.fd);
+            }
+        }
+        for (int fd : drop) {
+            std::string addr;
+            {
+                std::lock_guard<std::mutex> lk(peersMtx_);
+                for (auto it = peers_.begin(); it != peers_.end(); ++it)
+                    if (it->fd == fd) { addr = it->addr; peers_.erase(it); break; }
+            }
+            if (!addr.empty()) {
+                ::close(fd);
+                std::cout << "[P2P] peer " << addr << " dihapus (tidak sinkron, height tertinggal)\n";
+            }
+        }
+    }
+}
+
 void P2PNode::handleMessage(int fd, const std::string& line, const std::string& fromAddr) {
     std::istringstream iss(line);
     std::string type;
@@ -179,6 +218,24 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         sendLine(fd, "VERACK|" + std::to_string(bc_.height()));
         // kalau peer lebih maju, minta blok
         if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+    }
+    else if (type == "SYNC") {
+        // monitor sinkron: peer tanya height kita
+        std::string h;
+        std::getline(iss, h);
+        try {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (auto& p : peers_) if (p.fd == fd) p.lastHeight = std::stoull(h);
+        } catch (...) {}
+        sendLine(fd, "SYNCACK|" + std::to_string(bc_.height()));
+    }
+    else if (type == "SYNCACK") {
+        std::string h;
+        std::getline(iss, h);
+        try {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (auto& p : peers_) if (p.fd == fd) p.lastHeight = std::stoull(h);
+        } catch (...) {}
     }
     else if (type == "VERACK") {
         std::string h;

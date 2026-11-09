@@ -50,9 +50,11 @@ private:
     struct Peer {
         int fd = -1;
         std::string addr; // "ip:port"
+        uint64_t lastHeight = 0; // height terakhir yang dilaporkan peer (sinkron monitor)
     };
 
     void acceptLoop();
+    void syncMonitorLoop();
     void peerLoop(int fd, const std::string& addr);
     void handleMessage(int fd, const std::string& line, const std::string& fromAddr);
     void sendLine(int fd, const std::string& line);
