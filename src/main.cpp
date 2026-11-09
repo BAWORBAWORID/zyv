@@ -491,8 +491,11 @@ int main(int argc, char** argv) {
 
     // ---------------------------------------------------------------- node (P2P + RPC daemon)
     if (cmd == "node") {
-        // Default: port acak (client-mode ramah HP/PC). Custom: ./zyvor node <port>
-        uint16_t p2pPort = (argc > 2) ? uint16_t(std::stoi(argv[2])) : 0;
+        // Default: port acak (client-mode ramah HP/PC).
+        // Custom: ./zyvor node <port>  ATAU  env ZYVOR_P2P_PORT=<port>
+        uint16_t p2pPort = 0;
+        if (argc > 2) p2pPort = uint16_t(std::stoi(argv[2]));
+        else if (const char* env = std::getenv("ZYVOR_P2P_PORT")) p2pPort = uint16_t(std::stoi(env));
 
         // Auto-sync SEBELUM node jalan (sama seperti `zyvor sync`) — rantai lokal
         // langsung terbaru, jaringan saling terhubung tanpa langkah manual.
