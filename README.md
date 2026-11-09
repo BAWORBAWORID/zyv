@@ -149,6 +149,34 @@ src/
 - Tanpa env: fallback plaintext (mode lama). File terenkripsi tanpa env → ditolak dengan pesan.
 - Passphrase salah → dekripsi gagal (GCM tag), wallet tidak dimuat.
 
+### Menjalankan dengan Docker & Auto-Bore
+
+Docker image Zyvor mendukung mode **Client Node** (outbound biasa) dan **Relay Node** (dengan auto-tunnel `bore`):
+
+```bash
+# Build image
+docker build -t zyvor .
+
+# 1. Mode Client Node (default, outbound sync ke seed):
+docker run -d --name zyvor-node -v zyvor_data:/data zyvor
+
+# 2. Mode Relay Node (Auto Bore Tunnel, alokasi port acak publik):
+docker run -d --name zyvor-node -e ENABLE_BORE=1 -v zyvor_data:/data zyvor
+
+# 3. Mode Relay Node dengan Port Bore Tetap:
+docker run -d --name zyvor-node -e BORE_PORT=35109 -v zyvor_data:/data zyvor
+```
+
+**Variabel Lingkungan (Environment Variables):**
+| Variabel | Deskripsi | Default |
+|---|---|---|
+| `ENABLE_BORE` | Set `1` atau `true` untuk mengaktifkan bore tunnel otomatis | `0` (off) |
+| `BORE_PORT` | Menentukan port remote yang diinginkan pada server bore (mis. `35109`) | acak |
+| `BORE_SERVER` | Server tunnel bore publik | `bore.pub` |
+| `BORE_SECRET` | Secret token autentikasi server bore | *(opsional)* |
+| `ZYVOR_SEEDS` | Daftar seed node (dipisah koma) | `bore.pub:5315,node.zyvor.my.id:9933` |
+| `ZYVOR_EXTERNAL_ADDR` | Override manual alamat publik yang diiklankan ke peers | *(otomatis)* |
+
 ## Bukti uji (dijalankan di mesin ini)
 
 ```
