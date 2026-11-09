@@ -40,16 +40,14 @@ public:
     void broadcastPeers();
 
     std::vector<std::string> peers() const;
-    std::vector<std::string> knownPeers() const;
-    void addKnownPeer(const std::string& addr);
-    void loadKnownPeers(const std::string& path);
-    void saveKnownPeers(const std::string& path) const;
-    void queryPeers();
 
     static std::string fetchPublicIp();
+    static std::string getLocalInterfaceIp();
+    static bool isBehindNat(const std::string& publicIp);
+    std::string advertisedAddress() const;
     static std::vector<std::string> resolveDnsSeed(const std::string& host, uint16_t port);
-    std::string publicIp() const;
-    std::string externalAddress() const;
+    std::string publicIp() const { return publicIp_; }
+    std::string localIp() const { return localIp_; }
 
     void stop();
 
@@ -60,11 +58,11 @@ public:
 private:
     struct Peer {
         int fd = -1;
-        std::string addr;          // socket remote "ip:port"
-        std::string routableAddr;  // alamat routable yang bisa dihubungi node lain
-        bool isRoutable = false;
-        uint64_t lastHeight = 0;   // height terakhir yang dilaporkan peer (sync monitor)
-        int missed = 0;            // berapa putaran SYNC tanpa SYNCACK (respons)
+        std::string addr;        // socket remote (misal "bore.pub:5315" atau "127.0.0.1:50698")
+        std::string identity;    // identitas IP publik (misal "162.19.138.91" atau "bore.pub:5315")
+        std::string advAddress;  // alamat publish (misal "bore.pub:34333" atau "51.195.62.118:9933")
+        uint64_t lastHeight = 0; // height terakhir yang dilaporkan peer (sync monitor)
+        int missed = 0;          // berapa putaran SYNC tanpa SYNCACK (respons)
     };
 
     void acceptLoop();
@@ -81,7 +79,7 @@ private:
     std::atomic<bool> running_{false};
     mutable std::mutex peersMtx_;
     std::vector<Peer> peers_;
-    std::set<std::string> knownPeers_;
+    std::string localIp_;
     std::string publicIp_;
 };
 

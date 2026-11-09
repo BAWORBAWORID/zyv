@@ -156,19 +156,87 @@ std::vector<std::string> P2PNode::resolveDnsSeed(const std::string& host, uint16
     return results;
 }
 
-std::string P2PNode::publicIp() const {
-    return publicIp_;
+std::string P2PNode::getLocalInterfaceIp() {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return "";
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_addr.s_addr = inet_addr("8.8.8.8");
+    serv.sin_port = htons(53);
+    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0) {
+        close(sock);
+        return "";
+    }
+    sockaddr_in name{};
+    socklen_t namelen = sizeof(name);
+    if (getsockname(sock, (sockaddr*)&name, &namelen) < 0) {
+        close(sock);
+        return "";
+    }
+    close(sock);
+    char ip[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &name.sin_addr, ip, sizeof(ip))) return "";
+    return std::string(ip);
 }
 
-std::string P2PNode::externalAddress() const {
+static bool isPrivateOrCgnat(const std::string& ip) {
+    if (ip.empty() || isLoopback(ip)) return true;
+    if (ip.rfind("10.", 0) == 0) return true;
+    if (ip.rfind("192.168.", 0) == 0) return true;
+    if (ip.rfind("169.254.", 0) == 0) return true;
+    if (ip.rfind("172.", 0) == 0) {
+        size_t d1 = ip.find('.');
+        size_t d2 = ip.find('.', d1 + 1);
+        if (d1 != std::string::npos && d2 != std::string::npos) {
+            try {
+                int second = std::stoi(ip.substr(d1 + 1, d2 - d1 - 1));
+                if (second >= 16 && second <= 31) return true;
+            } catch (...) {}
+        }
+    }
+    // CGNAT RFC 6598 (100.64.0.0 - 100.127.255.255)
+    if (ip.rfind("100.", 0) == 0) {
+        size_t d1 = ip.find('.');
+        size_t d2 = ip.find('.', d1 + 1);
+        if (d1 != std::string::npos && d2 != std::string::npos) {
+            try {
+                int second = std::stoi(ip.substr(d1 + 1, d2 - d1 - 1));
+                if (second >= 64 && second <= 127) return true;
+            } catch (...) {}
+        }
+    }
+    return false;
+}
+
+bool P2PNode::isBehindNat(const std::string& pubIp) {
+    std::string locIp = getLocalInterfaceIp();
+    if (locIp.empty()) return true; // Asumsi aman jika gagal mendeteksi
+    if (isPrivateOrCgnat(locIp)) return true;
+    if (!pubIp.empty() && locIp != pubIp) return true;
+    return false;
+}
+
+std::string P2PNode::advertisedAddress() const {
+    // Opsi 3: Iklankan alamat tunnel / publik
+    // 1. Prioritas utama: jika diset lewat env ZYVOR_EXTERNAL_ADDR (misal bore.pub:PORT dari bore)
     const char* env = std::getenv("ZYVOR_EXTERNAL_ADDR");
-    if (env && *env) return std::string(env);
+    if (env && *env && isValidPeerAddr(env) && !isLoopback(env)) {
+        return std::string(env);
+    }
+
+    // 2. Cek apakah node berada di balik NAT/CGNAT
+    if (isBehindNat(publicIp_)) {
+        // Node di balik NAT tanpa tunnel: JANGAN iklankan port lokal agar tidak memicu 'gagal sambung'
+        return "";
+    }
+
+    // 3. Jika IP lokal == IP publik langsung (misal dedicated VPS)
     if (!publicIp_.empty() && listenPort_ > 0) {
         return publicIp_ + ":" + std::to_string(listenPort_);
     }
+
     return "";
 }
-
 
 // Serialisasi blok jadi SATU baris (header + tiap tx dipisah spasi-free '|NL|'):
 static std::string serializeBlockLine(const Block& b) {
@@ -221,8 +289,11 @@ bool P2PNode::start(uint16_t port) {
     if (getsockname(listenFd_, (sockaddr*)&actual, &alen) == 0)
         listenPort_ = ntohs(actual.sin_port);
 
-    // Dapatkan dan verifikasi IP Publik server (via ipinfo.io / apiify)
+    // Deteksi IP interface lokal & IP publik
+    localIp_ = getLocalInterfaceIp();
     publicIp_ = fetchPublicIp();
+    bool behindNat = isBehindNat(publicIp_);
+    std::string adv = advertisedAddress();
 
     running_ = true;
     std::thread([this] { acceptLoop(); }).detach();
@@ -231,8 +302,16 @@ bool P2PNode::start(uint16_t port) {
         std::cout << "[P2P] listening on port " << listenPort_ << " (acak, client-mode)\n";
     else
         std::cout << "[P2P] listening on port " << listenPort_ << "\n";
-    if (!publicIp_.empty())
-        std::cout << "[P2P] IP Publik terverifikasi: " << publicIp_ << "\n";
+    if (!publicIp_.empty()) {
+        std::cout << "[P2P] IP Publik: " << publicIp_
+                  << " (Lokal: " << (localIp_.empty() ? "unknown" : localIp_)
+                  << (behindNat ? " [NAT/CGNAT]" : " [Publik Langsung]") << ")\n";
+    }
+    if (!adv.empty()) {
+        std::cout << "[P2P] Alamat Ter-publish (Adv): " << adv << "\n";
+    } else if (behindNat) {
+        std::cout << "[P2P] Mode: NAT Client (outbound-only). Gunakan ZYVOR_EXTERNAL_ADDR=bore.pub:<port> jika memakai tunnel.\n";
+    }
     return true;
 }
 
@@ -254,10 +333,10 @@ void P2PNode::acceptLoop() {
         char ip[64];
         inet_ntop(AF_INET, &cli.sin_addr, ip, sizeof(ip));
         std::string addr = std::string(ip) + ":" + std::to_string(ntohs(cli.sin_port));
+        std::string initIdent = isLoopback(ip) ? "" : ip;
         {
             std::lock_guard<std::mutex> lk(peersMtx_);
-            // Koneksi masuk: belum dianggap routable sampai ada VERSION dengan port listening yang valid
-            peers_.push_back({fd, addr, "", false, 0, 0});
+            peers_.push_back({fd, addr, initIdent, "", 0, 0});
         }
         std::thread([this, fd, addr] { peerLoop(fd, addr); }).detach();
     }
@@ -268,7 +347,7 @@ bool P2PNode::connectTo(const std::string& ipPort) {
     {
         std::lock_guard<std::mutex> lk(peersMtx_);
         for (auto& p : peers_) {
-            if (p.addr == ipPort || (!p.routableAddr.empty() && p.routableAddr == ipPort)) {
+            if (p.addr == ipPort || p.identity == ipPort || p.advAddress == ipPort) {
                 return true; // sudah terhubung
             }
         }
@@ -312,19 +391,16 @@ bool P2PNode::connectTo(const std::string& ipPort) {
 
     {
         std::lock_guard<std::mutex> lk(peersMtx_);
-        peers_.push_back({fd, ipPort, ipPort, true, 0, 0});
-        knownPeers_.insert(ipPort);
+        peers_.push_back({fd, ipPort, ipPort, "", 0, 0});
     }
     std::cout << "[P2P] terhubung ke " << ipPort << "\n";
 
-    // Handshake VERSION
-    std::string adv = externalAddress();
+    // Handshake VERSION: kirim height, listenPort, publicIp_, dan advAddress
+    std::string adv = advertisedAddress();
     std::string vmsg = "VERSION|" + std::to_string(bc_.height()) + "|" + std::to_string(listenPort_);
+    vmsg += "|" + (!publicIp_.empty() ? publicIp_ : "none");
     if (!adv.empty()) vmsg += "|" + adv;
     sendLine(fd, vmsg);
-
-    // Langsung minta daftar peer
-    sendLine(fd, "GETPEERS");
 
     std::thread([this, fd, ipPort] { peerLoop(fd, ipPort); }).detach();
     return true;
@@ -356,12 +432,10 @@ void P2PNode::peerLoop(int fd, const std::string& addr) {
 
 // Monitor sinkron di latar belakang: tiap 15 detik tanya height tiap peer.
 void P2PNode::syncMonitorLoop() {
-    int round = 0;
     while (running_) {
         for (int i = 0; i < 15 && running_; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!running_) break;
-        round++;
 
         uint64_t myH = bc_.height();
         std::vector<int> drop;
@@ -388,11 +462,6 @@ void P2PNode::syncMonitorLoop() {
                 std::cout << "[P2P] peer " << addr << " dihapus (tidak merespons ~45 detik)\n";
             }
         }
-
-        // Tiap ~60 detik (4 putaran), request daftar peer terbaru dari semua peer yang terhubung
-        if (round % 4 == 0) {
-            queryPeers();
-        }
     }
 }
 
@@ -402,51 +471,46 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
     std::getline(iss, type, '|');
 
     if (type == "VERSION") {
-        std::string h, portStr, advAddr;
+        std::string h, portStr, peerIdent, peerAdv;
         std::getline(iss, h, '|');
         std::getline(iss, portStr, '|');
-        std::getline(iss, advAddr);
-        uint16_t peerListenPort = 0;
-        try { if (!portStr.empty()) peerListenPort = uint16_t(std::stoi(portStr)); } catch (...) {}
+        std::getline(iss, peerIdent, '|');
+        std::getline(iss, peerAdv);
+
+        // Identitas IP publik
+        std::string ident = (peerIdent != "none" && !peerIdent.empty()) ? peerIdent : "";
+        if (ident.empty() || isLoopback(ident)) {
+            std::string ip = extractIp(fromAddr);
+            if (!isLoopback(ip) && isPublicIp(ip)) ident = ip;
+        }
+
+        // Alamat publish (bore.pub:<port> atau IP publik langsung)
+        std::string adv = peerAdv;
+        if (!adv.empty() && (!isValidPeerAddr(adv) || isLoopback(adv))) {
+            adv = "";
+        }
 
         std::cout << "[P2P] peer " << fromAddr << " height=" << h;
-        if (peerListenPort > 0) std::cout << " port=" << peerListenPort;
-        if (!advAddr.empty()) std::cout << " adv=" << advAddr;
+        if (!ident.empty()) std::cout << " (identity: " << ident << ")";
+        if (!adv.empty()) std::cout << " [adv: " << adv << "]";
         std::cout << "\n";
 
-        sendLine(fd, "VERACK|" + std::to_string(bc_.height()));
-
-        // Tentukan alamat routable milik peer ini
-        std::string routable;
-        if (!advAddr.empty() && isValidPeerAddr(advAddr) && !isLoopback(advAddr)) {
-            routable = advAddr;
-        } else if (peerListenPort > 0) {
-            std::string ip = extractIp(fromAddr);
-            if (isPublicIp(ip)) {
-                routable = ip + ":" + std::to_string(peerListenPort);
-            }
-        }
+        // Balas VERACK dengan menyertakan publicIp kita dan advAddress jika ada
+        std::string myAdv = advertisedAddress();
+        std::string verackMsg = "VERACK|" + std::to_string(bc_.height()) + "|" + (!publicIp_.empty() ? publicIp_ : "none");
+        if (!myAdv.empty()) verackMsg += "|" + myAdv;
+        sendLine(fd, verackMsg);
 
         {
             std::lock_guard<std::mutex> lk(peersMtx_);
             for (auto& p : peers_) {
                 if (p.fd == fd) {
-                    if (!routable.empty()) {
-                        p.routableAddr = routable;
-                        p.isRoutable = true;
-                    } else {
-                        p.isRoutable = false;
-                    }
+                    if (!ident.empty()) p.identity = ident;
+                    if (!adv.empty()) p.advAddress = adv;
                     break;
                 }
             }
         }
-        if (!routable.empty()) {
-            addKnownPeer(routable);
-        }
-
-        // Minta daftar peer dari remote
-        sendLine(fd, "GETPEERS");
 
         // kalau peer lebih maju, minta blok
         try {
@@ -473,12 +537,25 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         } catch (...) {}
     }
     else if (type == "VERACK") {
-        std::string h;
-        std::getline(iss, h);
-        // Handshake selesai: minta daftar peer
-        sendLine(fd, "GETPEERS");
+        std::string h, peerIdent, peerAdv;
+        std::getline(iss, h, '|');
+        std::getline(iss, peerIdent, '|');
+        std::getline(iss, peerAdv);
+
+        std::string adv = peerAdv;
+        if (!adv.empty() && isValidPeerAddr(adv) && !isLoopback(adv)) {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (auto& p : peers_) {
+                if (p.fd == fd) {
+                    p.advAddress = adv;
+                    break;
+                }
+            }
+        }
+
         try {
-            if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+            if (!h.empty() && std::stoull(h) > bc_.height())
+                sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
         } catch (...) {}
     }
     else if (type == "GETBLOCKS") {
@@ -524,23 +601,13 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         std::ostringstream out;
         out << "PEERS|";
         bool first = true;
-        std::set<std::string> pool;
-        {
-            std::lock_guard<std::mutex> lk(peersMtx_);
-            for (const auto& p : peers_) {
-                if (p.isRoutable && !p.routableAddr.empty() && p.routableAddr != fromAddr && p.addr != fromAddr) {
-                    if (isValidPeerAddr(p.routableAddr) && !isLoopback(p.routableAddr))
-                        pool.insert(p.routableAddr);
-                }
-            }
-            for (const auto& kp : knownPeers_) {
-                if (kp != fromAddr && isValidPeerAddr(kp) && !isLoopback(kp))
-                    pool.insert(kp);
-            }
-        }
-        for (const auto& addr : pool) {
+        std::lock_guard<std::mutex> lk(peersMtx_);
+        for (const auto& p : peers_) {
+            // Hanya bagikan peer yang punya alamat publish (advAddress)
+            std::string target = !p.advAddress.empty() ? p.advAddress : "";
+            if (target.empty() || isLoopback(target) || target == fromAddr) continue;
             if (!first) out << ",";
-            out << addr;
+            out << target;
             first = false;
         }
         sendLine(fd, out.str());
@@ -556,59 +623,10 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
             while (!peer.empty() && (peer.front() == ' ' || peer.front() == '\t'))
                 peer.erase(0, 1);
             if (peer.empty()) continue;
-
-            // Validasi alamat peer: bukan loopback / localhost / invalid
             if (!isValidPeerAddr(peer) || isLoopback(peer)) continue;
 
-            addKnownPeer(peer);
+            // Sambungkan ke peer yang memang ter-publish
             connectTo(peer);
-        }
-    }
-}
-
-void P2PNode::addKnownPeer(const std::string& addr) {
-    if (!isValidPeerAddr(addr) || isLoopback(addr)) return;
-    std::lock_guard<std::mutex> lk(peersMtx_);
-    knownPeers_.insert(addr);
-}
-
-std::vector<std::string> P2PNode::knownPeers() const {
-    std::lock_guard<std::mutex> lk(peersMtx_);
-    return std::vector<std::string>(knownPeers_.begin(), knownPeers_.end());
-}
-
-void P2PNode::loadKnownPeers(const std::string& path) {
-    std::ifstream f(path);
-    if (!f.good()) return;
-    std::string line;
-    std::lock_guard<std::mutex> lk(peersMtx_);
-    while (std::getline(f, line)) {
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
-            line.pop_back();
-        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
-            line.erase(0, 1);
-        if (line.empty() || line[0] == '#') continue;
-        if (isValidPeerAddr(line) && !isLoopback(line)) {
-            knownPeers_.insert(line);
-        }
-    }
-}
-
-void P2PNode::saveKnownPeers(const std::string& path) const {
-    std::lock_guard<std::mutex> lk(peersMtx_);
-    if (knownPeers_.empty()) return;
-    std::ofstream f(path, std::ios::trunc);
-    if (!f.good()) return;
-    for (const auto& p : knownPeers_) {
-        f << p << "\n";
-    }
-}
-
-void P2PNode::queryPeers() {
-    std::lock_guard<std::mutex> lk(peersMtx_);
-    for (auto& p : peers_) {
-        if (p.fd >= 0) {
-            sendLine(p.fd, "GETPEERS");
         }
     }
 }
@@ -627,7 +645,10 @@ bool P2PNode::sendLine(int fd, const std::string& line) {
 bool P2PNode::sendTo(const std::string& addr, const std::string& line) {
     std::lock_guard<std::mutex> lk(peersMtx_);
     for (auto& p : peers_) {
-        if (p.addr == addr && p.fd >= 0) { sendLine(p.fd, line); return true; }
+        if ((p.addr == addr || p.identity == addr || p.advAddress == addr) && p.fd >= 0) {
+            sendLine(p.fd, line);
+            return true;
+        }
     }
     return false;
 }
@@ -648,26 +669,15 @@ void P2PNode::broadcastPeers() {
     std::ostringstream out;
     out << "PEERS|";
     bool first = true;
-    std::set<std::string> pool;
-    {
-        std::lock_guard<std::mutex> lk(peersMtx_);
-        for (const auto& p : peers_) {
-            if (p.isRoutable && !p.routableAddr.empty()) {
-                if (isValidPeerAddr(p.routableAddr) && !isLoopback(p.routableAddr))
-                    pool.insert(p.routableAddr);
-            }
-        }
-        for (const auto& kp : knownPeers_) {
-            if (isValidPeerAddr(kp) && !isLoopback(kp)) pool.insert(kp);
-        }
-    }
-    for (const auto& p : pool) {
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    for (const auto& p : peers_) {
+        std::string id = !p.advAddress.empty() ? p.advAddress : p.identity;
+        if (id.empty() || isLoopback(id)) continue;
         if (!first) out << ",";
-        out << p;
+        out << id;
         first = false;
     }
     std::string line = out.str();
-    std::lock_guard<std::mutex> lk(peersMtx_);
     for (auto& p : peers_) if (p.fd >= 0) sendLine(p.fd, line);
 }
 
@@ -675,8 +685,11 @@ std::vector<std::string> P2PNode::peers() const {
     std::lock_guard<std::mutex> lk(peersMtx_);
     std::vector<std::string> res;
     for (auto& p : peers_) {
-        if (!p.routableAddr.empty() && !isLoopback(p.routableAddr)) {
-            res.push_back(p.routableAddr);
+        // Tampilkan alamat published (advAddress) bila ada, atau identity publik
+        if (!p.advAddress.empty() && !isLoopback(p.advAddress)) {
+            res.push_back(p.advAddress);
+        } else if (!p.identity.empty() && !isLoopback(p.identity)) {
+            res.push_back(p.identity);
         } else if (!isLoopback(p.addr)) {
             res.push_back(p.addr);
         }

@@ -25,7 +25,6 @@ using namespace zyv;
 
 static const std::string CHAIN_FILE = "zyvor_chain.dat";
 static const std::string MEMPOOL_FILE = "zyvor_mempool.dat";
-static const std::string PEERS_FILE = "zyvor_peers.dat";
 // Wallet TIDAK disimpan di direktori node/jaringan — milik pengguna saja,
 // di home directory: ~/.zyvor/wallet.dat
 static std::string walletFilePath() {
@@ -60,12 +59,6 @@ static void loadMempool(Mempool& mp) {
 static void saveMempool(const Mempool& mp) {
     std::ofstream f(MEMPOOL_FILE, std::ios::trunc);
     f << mp.serialize();
-}
-static void loadPeers(P2PNode& p2p) {
-    p2p.loadKnownPeers(PEERS_FILE);
-}
-static void savePeers(const P2PNode& p2p) {
-    p2p.saveKnownPeers(PEERS_FILE);
 }
 // ------------------------------------------------------------------ wallet storage
 // Passphrase dari env ZYVOR_WALLET_PASS. Bila diset, wallet disimpan
@@ -548,27 +541,19 @@ int main(int argc, char** argv) {
 
         if (seeds.empty()) seeds.push_back(DEFAULT_SEED_NODE); // bore.pub:5315
 
-        // Muat peers dari file lokal dan sambungkan langsung tanpa tunggu 30 detik
-        loadPeers(p2p);
+        // Sambungkan ke seeds
         for (const auto& s : seeds) {
-            p2p.addKnownPeer(s);
             p2p.connectTo(s);
         }
-        for (const auto& p : p2p.knownPeers()) {
-            p2p.connectTo(p);
-        }
 
-        // simpan rantai dan peers berkala + reconnect otomatis
+        // simpan rantai berkala + reconnect otomatis ke seeds
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(30));
             saveChain(bc);
             saveMempool(mp);
-            savePeers(p2p);
-            p2p.queryPeers();
             if (p2p.peers().empty()) {
-                std::cout << "[P2P] tidak ada peer - mencoba reconnect seed & known peers...\n";
+                std::cout << "[P2P] tidak ada peer - mencoba reconnect seed...\n";
                 for (const auto& s : seeds) p2p.connectTo(s);
-                for (const auto& p : p2p.knownPeers()) p2p.connectTo(p);
             }
         }
     }

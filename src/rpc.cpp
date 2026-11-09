@@ -270,16 +270,10 @@ std::string RpcServer::jsonMempool() {
 std::string RpcServer::jsonPeers() {
     std::ostringstream o;
     auto ps = p2p_.peers();
-    auto kp = p2p_.knownPeers();
     o << "{\"count\":" << ps.size() << ",\"peers\":[";
     for (size_t i = 0; i < ps.size(); i++) {
         if (i) o << ",";
         o << jstr(ps[i]);
-    }
-    o << "],\"known_count\":" << kp.size() << ",\"known_peers\":[";
-    for (size_t i = 0; i < kp.size(); i++) {
-        if (i) o << ",";
-        o << jstr(kp[i]);
     }
     o << "]}";
     return o.str();
