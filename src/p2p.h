@@ -3,6 +3,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <set>
 #include "blockchain.h"
 #include "mempool.h"
 
@@ -12,14 +13,14 @@ namespace zyv {
 // P2P antar node — TCP line-based, POSIX socket + pthread.
 //
 // Pesan (satu baris JSON sederhana, '|'-separated untuk simplicity):
-//   VERSION|<height>|<listenPort>      handshake saat connect
-//   VERACK|<height>                    balasan handshake
-//   GETBLOCKS|<startHeight>            minta blok dari tinggi X
-//   BLOCKS|<count>|<blok1>..<blokN>    kirim blok (serialisasi block.h)
-//   TX|<txSerialized>                  broadcast transaksi baru
-//   NEWBLOCK|<blokSerialized>          broadcast blok baru
-//   GETPEERS                           minta daftar peer
-//   PEERS|<ip:port>,<ip:port>..        daftar peer
+//   VERSION|<height>|<listenPort>|<advAddr>  handshake saat connect
+//   VERACK|<height>                          balasan handshake
+//   GETBLOCKS|<startHeight>                  minta blok dari tinggi X
+//   BLOCKS|<count>|<blok1>..<blokN>          kirim blok (serialisasi block.h)
+//   TX|<txSerialized>                        broadcast transaksi baru
+//   NEWBLOCK|<blokSerialized>                broadcast blok baru
+//   GETPEERS                                 minta daftar peer
+//   PEERS|<ip:port>,<ip:port>..              daftar peer
 // ============================================================================
 class P2PNode {
 public:
@@ -39,6 +40,16 @@ public:
     void broadcastPeers();
 
     std::vector<std::string> peers() const;
+    std::vector<std::string> knownPeers() const;
+    void addKnownPeer(const std::string& addr);
+    void loadKnownPeers(const std::string& path);
+    void saveKnownPeers(const std::string& path) const;
+    void queryPeers();
+
+    static std::string fetchPublicIp();
+    static std::vector<std::string> resolveDnsSeed(const std::string& host, uint16_t port);
+    std::string publicIp() const;
+    std::string externalAddress() const;
 
     void stop();
 
@@ -49,9 +60,11 @@ public:
 private:
     struct Peer {
         int fd = -1;
-        std::string addr; // "ip:port"
-        uint64_t lastHeight = 0; // height terakhir yang dilaporkan peer (sync monitor)
-        int missed = 0;          // berapa putaran SYNC tanpa SYNCACK (respons)
+        std::string addr;          // socket remote "ip:port"
+        std::string routableAddr;  // alamat routable yang bisa dihubungi node lain
+        bool isRoutable = false;
+        uint64_t lastHeight = 0;   // height terakhir yang dilaporkan peer (sync monitor)
+        int missed = 0;            // berapa putaran SYNC tanpa SYNCACK (respons)
     };
 
     void acceptLoop();
@@ -68,6 +81,8 @@ private:
     std::atomic<bool> running_{false};
     mutable std::mutex peersMtx_;
     std::vector<Peer> peers_;
+    std::set<std::string> knownPeers_;
+    std::string publicIp_;
 };
 
 } // namespace zyv

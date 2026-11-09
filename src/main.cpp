@@ -25,6 +25,7 @@ using namespace zyv;
 
 static const std::string CHAIN_FILE = "zyvor_chain.dat";
 static const std::string MEMPOOL_FILE = "zyvor_mempool.dat";
+static const std::string PEERS_FILE = "zyvor_peers.dat";
 // Wallet TIDAK disimpan di direktori node/jaringan — milik pengguna saja,
 // di home directory: ~/.zyvor/wallet.dat
 static std::string walletFilePath() {
@@ -59,6 +60,12 @@ static void loadMempool(Mempool& mp) {
 static void saveMempool(const Mempool& mp) {
     std::ofstream f(MEMPOOL_FILE, std::ios::trunc);
     f << mp.serialize();
+}
+static void loadPeers(P2PNode& p2p) {
+    p2p.loadKnownPeers(PEERS_FILE);
+}
+static void savePeers(const P2PNode& p2p) {
+    p2p.saveKnownPeers(PEERS_FILE);
 }
 // ------------------------------------------------------------------ wallet storage
 // Passphrase dari env ZYVOR_WALLET_PASS. Bila diset, wallet disimpan
@@ -531,16 +538,37 @@ int main(int argc, char** argv) {
             std::string s;
             while (std::getline(ss, s, ',')) if (!s.empty()) seeds.push_back(s);
         }
-        if (seeds.empty()) seeds.push_back(DEFAULT_SEED_NODE); // node.zyvor.my.id:9933
-        // simpan rantai berkala (blok yang diterima via P2P ikut persist ke disk)
-        // + reconnect otomatis ke seed kalau semua koneksi hilang
+
+        // Ambil peers dari DNS seed node.zyvor.my.id bila tersedia di DNS
+        auto dnsSeeds = P2PNode::resolveDnsSeed("node.zyvor.my.id", DEFAULT_SEED_PORT);
+        if (!dnsSeeds.empty()) {
+            std::cout << "[P2P] Ditemukan " << dnsSeeds.size() << " peer dari DNS seed node.zyvor.my.id\n";
+            for (const auto& dp : dnsSeeds) seeds.push_back(dp);
+        }
+
+        if (seeds.empty()) seeds.push_back(DEFAULT_SEED_NODE); // bore.pub:5315
+
+        // Muat peers dari file lokal dan sambungkan langsung tanpa tunggu 30 detik
+        loadPeers(p2p);
+        for (const auto& s : seeds) {
+            p2p.addKnownPeer(s);
+            p2p.connectTo(s);
+        }
+        for (const auto& p : p2p.knownPeers()) {
+            p2p.connectTo(p);
+        }
+
+        // simpan rantai dan peers berkala + reconnect otomatis
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(30));
             saveChain(bc);
             saveMempool(mp);
+            savePeers(p2p);
+            p2p.queryPeers();
             if (p2p.peers().empty()) {
-                std::cout << "[P2P] tidak ada peer - mencoba reconnect seed...\n";
+                std::cout << "[P2P] tidak ada peer - mencoba reconnect seed & known peers...\n";
                 for (const auto& s : seeds) p2p.connectTo(s);
+                for (const auto& p : p2p.knownPeers()) p2p.connectTo(p);
             }
         }
     }

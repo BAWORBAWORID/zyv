@@ -5,6 +5,10 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <iostream>
+#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <curl/curl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sstream>
@@ -14,6 +18,156 @@
 #include <unistd.h>
 
 namespace zyv {
+
+static bool isLoopback(const std::string& addr) {
+    std::string host = addr;
+    size_t colon = addr.rfind(':');
+    if (colon != std::string::npos) host = addr.substr(0, colon);
+    if (host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "::1") return true;
+    if (host.rfind("127.", 0) == 0) return true;
+    return false;
+}
+
+static bool isValidPeerAddr(const std::string& addr) {
+    if (addr.empty() || addr.size() > 255) return false;
+    size_t colon = addr.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon == addr.size() - 1) return false;
+    std::string portStr = addr.substr(colon + 1);
+    for (char c : portStr) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    try {
+        int p = std::stoi(portStr);
+        if (p <= 0 || p > 65535) return false;
+    } catch (...) {
+        return false;
+    }
+    std::string host = addr.substr(0, colon);
+    for (char c : host) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '-' && c != '_')
+            return false;
+    }
+    return true;
+}
+
+static std::string extractIp(const std::string& addr) {
+    size_t colon = addr.rfind(':');
+    if (colon == std::string::npos) return addr;
+    return addr.substr(0, colon);
+}
+
+static bool isPublicIp(const std::string& ip) {
+    if (isLoopback(ip)) return false;
+    if (ip.rfind("10.", 0) == 0) return false;
+    if (ip.rfind("192.168.", 0) == 0) return false;
+    if (ip.rfind("169.254.", 0) == 0) return false;
+    if (ip.rfind("172.", 0) == 0) {
+        size_t d1 = ip.find('.');
+        size_t d2 = ip.find('.', d1 + 1);
+        if (d1 != std::string::npos && d2 != std::string::npos) {
+            try {
+                int second = std::stoi(ip.substr(d1 + 1, d2 - d1 - 1));
+                if (second >= 16 && second <= 31) return false;
+            } catch (...) {}
+        }
+    }
+    return true;
+}
+
+static size_t p2pCurlWrite(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* s = static_cast<std::string*>(userdata);
+    s->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+static std::string curlHttpGet(const std::string& url, long timeoutSec = 5) {
+    CURL* c = curl_easy_init();
+    if (!c) return "";
+    std::string out;
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "zyvor-node/1.0");
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, p2pCurlWrite);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &out);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, timeoutSec);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_perform(c);
+    curl_easy_cleanup(c);
+    return out;
+}
+
+static std::string parseIpFromJson(const std::string& json) {
+    size_t pos = json.find("\"ip\":");
+    if (pos == std::string::npos) pos = json.find("\"ip\" :");
+    if (pos == std::string::npos) return "";
+    size_t q1 = json.find('"', pos + 5);
+    if (q1 == std::string::npos) return "";
+    size_t q2 = json.find('"', q1 + 1);
+    if (q2 == std::string::npos) return "";
+    return json.substr(q1 + 1, q2 - q1 - 1);
+}
+
+std::string P2PNode::fetchPublicIp() {
+    static std::string cached;
+    static std::mutex mtx;
+    std::lock_guard<std::mutex> lk(mtx);
+    if (!cached.empty()) return cached;
+
+    // 1. Dapatkan dari https://ipinfo.io/json
+    std::string res = curlHttpGet("https://ipinfo.io/json", 4);
+    std::string ip = parseIpFromJson(res);
+
+    // 2. Fallback jika ipinfo.io gagal: https://api.ipify.org
+    if (ip.empty() || isLoopback(ip) || !isPublicIp(ip)) {
+        res = curlHttpGet("https://api.ipify.org", 4);
+        while (!res.empty() && (res.back() == '\r' || res.back() == '\n' || res.back() == ' '))
+            res.pop_back();
+        if (!res.empty() && !isLoopback(res) && isPublicIp(res)) ip = res;
+    }
+
+    if (!ip.empty() && isPublicIp(ip)) {
+        cached = ip;
+        return ip;
+    }
+    return "";
+}
+
+std::vector<std::string> P2PNode::resolveDnsSeed(const std::string& host, uint16_t port) {
+    std::vector<std::string> results;
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) == 0 && res) {
+        for (addrinfo* p = res; p != nullptr; p = p->ai_next) {
+            sockaddr_in* sin = (sockaddr_in*)p->ai_addr;
+            char ipBuf[64];
+            if (inet_ntop(AF_INET, &sin->sin_addr, ipBuf, sizeof(ipBuf))) {
+                std::string ipStr = ipBuf;
+                if (!isLoopback(ipStr)) {
+                    std::string ep = ipStr + ":" + std::to_string(port);
+                    if (std::find(results.begin(), results.end(), ep) == results.end()) {
+                        results.push_back(ep);
+                    }
+                }
+            }
+        }
+        freeaddrinfo(res);
+    }
+    return results;
+}
+
+std::string P2PNode::publicIp() const {
+    return publicIp_;
+}
+
+std::string P2PNode::externalAddress() const {
+    const char* env = std::getenv("ZYVOR_EXTERNAL_ADDR");
+    if (env && *env) return std::string(env);
+    if (!publicIp_.empty() && listenPort_ > 0) {
+        return publicIp_ + ":" + std::to_string(listenPort_);
+    }
+    return "";
+}
 
 
 // Serialisasi blok jadi SATU baris (header + tiap tx dipisah spasi-free '|NL|'):
@@ -67,6 +221,9 @@ bool P2PNode::start(uint16_t port) {
     if (getsockname(listenFd_, (sockaddr*)&actual, &alen) == 0)
         listenPort_ = ntohs(actual.sin_port);
 
+    // Dapatkan dan verifikasi IP Publik server (via ipinfo.io / apiify)
+    publicIp_ = fetchPublicIp();
+
     running_ = true;
     std::thread([this] { acceptLoop(); }).detach();
     std::thread([this] { syncMonitorLoop(); }).detach();
@@ -74,6 +231,8 @@ bool P2PNode::start(uint16_t port) {
         std::cout << "[P2P] listening on port " << listenPort_ << " (acak, client-mode)\n";
     else
         std::cout << "[P2P] listening on port " << listenPort_ << "\n";
+    if (!publicIp_.empty())
+        std::cout << "[P2P] IP Publik terverifikasi: " << publicIp_ << "\n";
     return true;
 }
 
@@ -97,25 +256,41 @@ void P2PNode::acceptLoop() {
         std::string addr = std::string(ip) + ":" + std::to_string(ntohs(cli.sin_port));
         {
             std::lock_guard<std::mutex> lk(peersMtx_);
-            peers_.push_back({fd, addr});
+            // Koneksi masuk: belum dianggap routable sampai ada VERSION dengan port listening yang valid
+            peers_.push_back({fd, addr, "", false, 0, 0});
         }
         std::thread([this, fd, addr] { peerLoop(fd, addr); }).detach();
     }
 }
 
 bool P2PNode::connectTo(const std::string& ipPort) {
+    if (!isValidPeerAddr(ipPort) || isLoopback(ipPort)) return false;
     {
         std::lock_guard<std::mutex> lk(peersMtx_);
-        for (auto& p : peers_) if (p.addr == ipPort) return true; // sudah terhubung
+        for (auto& p : peers_) {
+            if (p.addr == ipPort || (!p.routableAddr.empty() && p.routableAddr == ipPort)) {
+                return true; // sudah terhubung
+            }
+        }
     }
 
     size_t colon = ipPort.rfind(':');
     if (colon == std::string::npos) return false;
     std::string ip = ipPort.substr(0, colon);
-    uint16_t port = uint16_t(std::stoi(ipPort.substr(colon + 1)));
+    uint16_t port = 0;
+    try {
+        port = uint16_t(std::stoi(ipPort.substr(colon + 1)));
+    } catch (...) {
+        return false;
+    }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return false;
+
+    // Timeout saat handshake koneksi
+    timeval tv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     hostent* he = gethostbyname(ip.c_str());
     if (!he) { ::close(fd); return false; }
@@ -131,14 +306,25 @@ bool P2PNode::connectTo(const std::string& ipPort) {
         return false;
     }
 
+    timeval tvZero{0, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tvZero, sizeof(tvZero));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tvZero, sizeof(tvZero));
+
     {
         std::lock_guard<std::mutex> lk(peersMtx_);
-        peers_.push_back({fd, ipPort});
+        peers_.push_back({fd, ipPort, ipPort, true, 0, 0});
+        knownPeers_.insert(ipPort);
     }
     std::cout << "[P2P] terhubung ke " << ipPort << "\n";
 
-    // handshake
-    sendLine(fd, "VERSION|" + std::to_string(bc_.height()) + "|" + std::to_string(listenPort_));
+    // Handshake VERSION
+    std::string adv = externalAddress();
+    std::string vmsg = "VERSION|" + std::to_string(bc_.height()) + "|" + std::to_string(listenPort_);
+    if (!adv.empty()) vmsg += "|" + adv;
+    sendLine(fd, vmsg);
+
+    // Langsung minta daftar peer
+    sendLine(fd, "GETPEERS");
 
     std::thread([this, fd, ipPort] { peerLoop(fd, ipPort); }).detach();
     return true;
@@ -169,14 +355,14 @@ void P2PNode::peerLoop(int fd, const std::string& addr) {
 }
 
 // Monitor sinkron di latar belakang: tiap 15 detik tanya height tiap peer.
-// Peer yang height-nya TIDAK SAMA dengan kita 2 putaran berturut-turut → dianggap
-// tidak sinkron → koneksi diputus. Peer yang lebih maju tetap dipertahankan
-// (kita yang akan sync dari dia via GETBLOCKS).
 void P2PNode::syncMonitorLoop() {
+    int round = 0;
     while (running_) {
         for (int i = 0; i < 15 && running_; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!running_) break;
+        round++;
+
         uint64_t myH = bc_.height();
         std::vector<int> drop;
         {
@@ -202,6 +388,11 @@ void P2PNode::syncMonitorLoop() {
                 std::cout << "[P2P] peer " << addr << " dihapus (tidak merespons ~45 detik)\n";
             }
         }
+
+        // Tiap ~60 detik (4 putaran), request daftar peer terbaru dari semua peer yang terhubung
+        if (round % 4 == 0) {
+            queryPeers();
+        }
     }
 }
 
@@ -211,13 +402,56 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
     std::getline(iss, type, '|');
 
     if (type == "VERSION") {
-        std::string h, port;
+        std::string h, portStr, advAddr;
         std::getline(iss, h, '|');
-        std::getline(iss, port);
-        std::cout << "[P2P] peer " << fromAddr << " height=" << h << "\n";
+        std::getline(iss, portStr, '|');
+        std::getline(iss, advAddr);
+        uint16_t peerListenPort = 0;
+        try { if (!portStr.empty()) peerListenPort = uint16_t(std::stoi(portStr)); } catch (...) {}
+
+        std::cout << "[P2P] peer " << fromAddr << " height=" << h;
+        if (peerListenPort > 0) std::cout << " port=" << peerListenPort;
+        if (!advAddr.empty()) std::cout << " adv=" << advAddr;
+        std::cout << "\n";
+
         sendLine(fd, "VERACK|" + std::to_string(bc_.height()));
+
+        // Tentukan alamat routable milik peer ini
+        std::string routable;
+        if (!advAddr.empty() && isValidPeerAddr(advAddr) && !isLoopback(advAddr)) {
+            routable = advAddr;
+        } else if (peerListenPort > 0) {
+            std::string ip = extractIp(fromAddr);
+            if (isPublicIp(ip)) {
+                routable = ip + ":" + std::to_string(peerListenPort);
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (auto& p : peers_) {
+                if (p.fd == fd) {
+                    if (!routable.empty()) {
+                        p.routableAddr = routable;
+                        p.isRoutable = true;
+                    } else {
+                        p.isRoutable = false;
+                    }
+                    break;
+                }
+            }
+        }
+        if (!routable.empty()) {
+            addKnownPeer(routable);
+        }
+
+        // Minta daftar peer dari remote
+        sendLine(fd, "GETPEERS");
+
         // kalau peer lebih maju, minta blok
-        if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+        try {
+            if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+        } catch (...) {}
     }
     else if (type == "SYNC") {
         // monitor sinkron: peer tanya height kita
@@ -241,13 +475,17 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
     else if (type == "VERACK") {
         std::string h;
         std::getline(iss, h);
-        if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+        // Handshake selesai: minta daftar peer
+        sendLine(fd, "GETPEERS");
+        try {
+            if (std::stoull(h) > bc_.height()) sendLine(fd, "GETBLOCKS|" + std::to_string(bc_.height()));
+        } catch (...) {}
     }
     else if (type == "GETBLOCKS") {
         std::string startS;
         std::getline(iss, startS);
-        size_t start = std::stoul(startS);
-        // kirim maksimal 50 blok per pesan
+        size_t start = 0;
+        try { start = std::stoul(startS); } catch (...) { return; }
         size_t count = std::min<size_t>(50, bc_.height() > start ? bc_.height() - start : 0);
         for (size_t i = start; i < start + count; i++) {
             sendLine(fd, std::string("BLOCK|") + serializeBlockLine(bc_.chain()[i]));
@@ -286,10 +524,23 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         std::ostringstream out;
         out << "PEERS|";
         bool first = true;
-        for (const auto& p : peers_) {
-            if (p.addr == fromAddr) continue;
+        std::set<std::string> pool;
+        {
+            std::lock_guard<std::mutex> lk(peersMtx_);
+            for (const auto& p : peers_) {
+                if (p.isRoutable && !p.routableAddr.empty() && p.routableAddr != fromAddr && p.addr != fromAddr) {
+                    if (isValidPeerAddr(p.routableAddr) && !isLoopback(p.routableAddr))
+                        pool.insert(p.routableAddr);
+                }
+            }
+            for (const auto& kp : knownPeers_) {
+                if (kp != fromAddr && isValidPeerAddr(kp) && !isLoopback(kp))
+                    pool.insert(kp);
+            }
+        }
+        for (const auto& addr : pool) {
             if (!first) out << ",";
-            out << p.addr;
+            out << addr;
             first = false;
         }
         sendLine(fd, out.str());
@@ -300,7 +551,64 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         std::stringstream ps(list);
         std::string peer;
         while (std::getline(ps, peer, ',')) {
-            if (!peer.empty()) connectTo(peer);
+            while (!peer.empty() && (peer.back() == '\r' || peer.back() == ' ' || peer.back() == '\t'))
+                peer.pop_back();
+            while (!peer.empty() && (peer.front() == ' ' || peer.front() == '\t'))
+                peer.erase(0, 1);
+            if (peer.empty()) continue;
+
+            // Validasi alamat peer: bukan loopback / localhost / invalid
+            if (!isValidPeerAddr(peer) || isLoopback(peer)) continue;
+
+            addKnownPeer(peer);
+            connectTo(peer);
+        }
+    }
+}
+
+void P2PNode::addKnownPeer(const std::string& addr) {
+    if (!isValidPeerAddr(addr) || isLoopback(addr)) return;
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    knownPeers_.insert(addr);
+}
+
+std::vector<std::string> P2PNode::knownPeers() const {
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    return std::vector<std::string>(knownPeers_.begin(), knownPeers_.end());
+}
+
+void P2PNode::loadKnownPeers(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.good()) return;
+    std::string line;
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            line.erase(0, 1);
+        if (line.empty() || line[0] == '#') continue;
+        if (isValidPeerAddr(line) && !isLoopback(line)) {
+            knownPeers_.insert(line);
+        }
+    }
+}
+
+void P2PNode::saveKnownPeers(const std::string& path) const {
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    if (knownPeers_.empty()) return;
+    std::ofstream f(path, std::ios::trunc);
+    if (!f.good()) return;
+    for (const auto& p : knownPeers_) {
+        f << p << "\n";
+    }
+}
+
+void P2PNode::queryPeers() {
+    std::lock_guard<std::mutex> lk(peersMtx_);
+    for (auto& p : peers_) {
+        if (p.fd >= 0) {
+            sendLine(p.fd, "GETPEERS");
         }
     }
 }
@@ -340,9 +648,22 @@ void P2PNode::broadcastPeers() {
     std::ostringstream out;
     out << "PEERS|";
     bool first = true;
-    for (const auto& p : peers_) {
+    std::set<std::string> pool;
+    {
+        std::lock_guard<std::mutex> lk(peersMtx_);
+        for (const auto& p : peers_) {
+            if (p.isRoutable && !p.routableAddr.empty()) {
+                if (isValidPeerAddr(p.routableAddr) && !isLoopback(p.routableAddr))
+                    pool.insert(p.routableAddr);
+            }
+        }
+        for (const auto& kp : knownPeers_) {
+            if (isValidPeerAddr(kp) && !isLoopback(kp)) pool.insert(kp);
+        }
+    }
+    for (const auto& p : pool) {
         if (!first) out << ",";
-        out << p.addr;
+        out << p;
         first = false;
     }
     std::string line = out.str();
@@ -353,7 +674,13 @@ void P2PNode::broadcastPeers() {
 std::vector<std::string> P2PNode::peers() const {
     std::lock_guard<std::mutex> lk(peersMtx_);
     std::vector<std::string> res;
-    for (auto& p : peers_) res.push_back(p.addr);
+    for (auto& p : peers_) {
+        if (!p.routableAddr.empty() && !isLoopback(p.routableAddr)) {
+            res.push_back(p.routableAddr);
+        } else if (!isLoopback(p.addr)) {
+            res.push_back(p.addr);
+        }
+    }
     return res;
 }
 
