@@ -50,14 +50,15 @@ private:
     struct Peer {
         int fd = -1;
         std::string addr; // "ip:port"
-        uint64_t lastHeight = 0; // height terakhir yang dilaporkan peer (sinkron monitor)
+        uint64_t lastHeight = 0; // height terakhir yang dilaporkan peer (sync monitor)
+        int missed = 0;          // berapa putaran SYNC tanpa SYNCACK (respons)
     };
 
     void acceptLoop();
     void syncMonitorLoop();
     void peerLoop(int fd, const std::string& addr);
     void handleMessage(int fd, const std::string& line, const std::string& fromAddr);
-    void sendLine(int fd, const std::string& line);
+    bool sendLine(int fd, const std::string& line);
     bool sendTo(const std::string& addr, const std::string& line);
 
     Blockchain& bc_;

@@ -173,21 +173,21 @@ void P2PNode::peerLoop(int fd, const std::string& addr) {
 // tidak sinkron → koneksi diputus. Peer yang lebih maju tetap dipertahankan
 // (kita yang akan sync dari dia via GETBLOCKS).
 void P2PNode::syncMonitorLoop() {
-    int round = 0;
     while (running_) {
         for (int i = 0; i < 15 && running_; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!running_) break;
-        ++round;
         uint64_t myH = bc_.height();
         std::vector<int> drop;
         {
             std::lock_guard<std::mutex> lk(peersMtx_);
             for (auto& p : peers_) {
-                // tandai: kirim SYNC (balasan SYNCACK akan memperbarui lastHeight)
-                sendLine(p.fd, "SYNC|" + std::to_string(myH));
-                if (round > 1 && p.lastHeight != 0 && p.lastHeight != myH && p.lastHeight < myH)
-                    drop.push_back(p.fd);
+                if (sendLine(p.fd, "SYNC|" + std::to_string(myH))) {
+                    ++p.missed; // di-reset ke 0 saat SYNCACK diterima
+                    if (p.missed >= 3) drop.push_back(p.fd); // ~45 dtk tanpa respons
+                } else {
+                    drop.push_back(p.fd); // socket langsung gagal kirim → mati
+                }
             }
         }
         for (int fd : drop) {
@@ -199,7 +199,7 @@ void P2PNode::syncMonitorLoop() {
             }
             if (!addr.empty()) {
                 ::close(fd);
-                std::cout << "[P2P] peer " << addr << " dihapus (tidak sinkron, height tertinggal)\n";
+                std::cout << "[P2P] peer " << addr << " dihapus (tidak merespons ~45 detik)\n";
             }
         }
     }
@@ -234,7 +234,8 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
         std::getline(iss, h);
         try {
             std::lock_guard<std::mutex> lk(peersMtx_);
-            for (auto& p : peers_) if (p.fd == fd) p.lastHeight = std::stoull(h);
+            for (auto& p : peers_)
+                if (p.fd == fd) { p.lastHeight = std::stoull(h); p.missed = 0; }
         } catch (...) {}
     }
     else if (type == "VERACK") {
@@ -304,14 +305,15 @@ void P2PNode::handleMessage(int fd, const std::string& line, const std::string& 
     }
 }
 
-void P2PNode::sendLine(int fd, const std::string& line) {
+bool P2PNode::sendLine(int fd, const std::string& line) {
     std::string msg = line + "\n";
     ssize_t sent = 0;
     while (sent < (ssize_t)msg.size()) {
         ssize_t n = send(fd, msg.data() + sent, msg.size() - sent, MSG_NOSIGNAL);
-        if (n <= 0) return;
+        if (n <= 0) return false;
         sent += n;
     }
+    return true;
 }
 
 bool P2PNode::sendTo(const std::string& addr, const std::string& line) {
