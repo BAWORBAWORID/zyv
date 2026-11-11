@@ -401,6 +401,7 @@ bool P2PNode::connectTo(const std::string& ipPort) {
     vmsg += "|" + (!publicIp_.empty() ? publicIp_ : "none");
     if (!adv.empty()) vmsg += "|" + adv;
     sendLine(fd, vmsg);
+    sendLine(fd, "GETPEERS"); // langsung minta daftar peer setelah handshake
 
     std::thread([this, fd, ipPort] { peerLoop(fd, ipPort); }).detach();
     return true;
@@ -432,12 +433,24 @@ void P2PNode::peerLoop(int fd, const std::string& addr) {
 
 // Monitor sinkron di latar belakang: tiap 15 detik tanya height tiap peer.
 void P2PNode::syncMonitorLoop() {
+    int rounds = 0;
     while (running_) {
         for (int i = 0; i < 15 && running_; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!running_) break;
+        ++rounds;
 
         uint64_t myH = bc_.height();
+        // Peer discovery periodik: minta daftar peer (tiap ~1 menit) supaya node
+        // tidak hanya bergantung pada seed — saling terhubung langsung antar node.
+        if (rounds % 4 == 0) {
+            std::vector<int> ask;
+            {
+                std::lock_guard<std::mutex> lk(peersMtx_);
+                for (auto& p : peers_) ask.push_back(p.fd);
+            }
+            for (int fd : ask) sendLine(fd, "GETPEERS");
+        }
         std::vector<int> drop;
         {
             std::lock_guard<std::mutex> lk(peersMtx_);
