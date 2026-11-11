@@ -16,8 +16,17 @@ if [ "${ENABLE_BORE:-0}" = "1" ] || [ "${ENABLE_BORE}" = "true" ] || [ "${USE_BO
     BORE_SERVER="${BORE_SERVER:-bore.pub}"
     BORE_ARGS="local 9933 --to ${BORE_SERVER}"
 
+    # Validasi BORE_PORT: harus angka 1-65535. Nilai tidak valid (mis. dari platform)
+    # diabaikan — bore.pub akan memilihkan port acak yang pasti tersedia.
     if [ -n "${BORE_PORT}" ] && [ "${BORE_PORT}" != "0" ]; then
-        BORE_ARGS="${BORE_ARGS} --port ${BORE_PORT}"
+        case "${BORE_PORT}" in
+            ''|[!0-9]*) echo "[BORE] BORE_PORT tidak valid ('${BORE_PORT}') — pakai port acak";;
+            *) if [ "${BORE_PORT}" -ge 1 ] && [ "${BORE_PORT}" -le 65535 ]; then
+                   BORE_ARGS="${BORE_ARGS} --port ${BORE_PORT}"
+               else
+                   echo "[BORE] BORE_PORT ${BORE_PORT} di luar 1-65535 — pakai port acak"
+               fi;;
+        esac
     fi
 
     if [ -n "${BORE_SECRET}" ]; then
@@ -46,7 +55,7 @@ if [ "${ENABLE_BORE:-0}" = "1" ] || [ "${ENABLE_BORE}" = "true" ] || [ "${USE_BO
     if [ -n "${ADV_ADDR}" ]; then
         export ZYVOR_EXTERNAL_ADDR="${ADV_ADDR}"
         echo "[BORE] Tunnel aktif! Alamat relay publik: ${ZYVOR_EXTERNAL_ADDR}"
-    elif [ -n "${BORE_PORT}" ] && [ "${BORE_PORT}" != "0" ]; then
+    elif [ -n "${BORE_PORT}" ] && [ "${BORE_PORT}" != "0" ] && [ "${BORE_PORT}" -ge 1 ] 2>/dev/null && [ "${BORE_PORT}" -le 65535 ] 2>/dev/null; then
         export ZYVOR_EXTERNAL_ADDR="${BORE_SERVER}:${BORE_PORT}"
         echo "[BORE] Tunnel aktif pada port: ${ZYVOR_EXTERNAL_ADDR}"
     else
