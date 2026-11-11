@@ -24,6 +24,7 @@ if [ "${ENABLE_BORE:-0}" = "1" ] || [ "${ENABLE_BORE}" = "true" ] || [ "${USE_BO
         BORE_ARGS="${BORE_ARGS} --secret ${BORE_SECRET}"
     fi
 
+    export BORE_ON=1
     echo "[BORE] Menghubungkan tunnel ke ${BORE_SERVER}..."
     bore ${BORE_ARGS} > /tmp/bore.log 2>&1 &
     BORE_PID=$!
@@ -56,14 +57,29 @@ fi
 # Pastikan direktori data ada
 mkdir -p /data /root/.zyvor
 
+# Node P2P harus listen 9933 saat bore aktif (bore mem-forward 9933)
+if [ "${BORE_ON:-0}" = "1" ]; then
+    NODE_PORT_ARGS="9933"
+else
+    NODE_PORT_ARGS=""
+fi
+
 # Jalankan perintah: jika tanpa argumen atau "node", sync dulu baru jalankan daemon node
 if [ $# -eq 0 ]; then
     /usr/src/zyvor/zyvor sync || true
-    exec stdbuf -oL /usr/src/zyvor/zyvor node
+    if [ -n "$NODE_PORT_ARGS" ]; then
+        exec stdbuf -oL /usr/src/zyvor/zyvor node "$NODE_PORT_ARGS"
+    else
+        exec stdbuf -oL /usr/src/zyvor/zyvor node
+    fi
 elif [ "$1" = "node" ]; then
     shift
     /usr/src/zyvor/zyvor sync || true
-    exec stdbuf -oL /usr/src/zyvor/zyvor node "$@"
+    if [ -n "$NODE_PORT_ARGS" ] && [ $# -eq 0 ]; then
+        exec stdbuf -oL /usr/src/zyvor/zyvor node "$NODE_PORT_ARGS"
+    else
+        exec stdbuf -oL /usr/src/zyvor/zyvor node "$@"
+    fi
 else
     exec /usr/src/zyvor/zyvor "$@"
 fi
