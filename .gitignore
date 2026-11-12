@@ -11,3 +11,4 @@ test_fork
 
 # file sistem
 .DS_Store
+*.apk
