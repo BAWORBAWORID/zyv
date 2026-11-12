@@ -12,6 +12,7 @@
 #include "block.h"
 #include "blockchain.h"
 #include "mempool.h"
+#include <map>
 #include "keys.h"
 #include "sha256.h"
 #include "p2p.h"
@@ -182,6 +183,7 @@ static void usage() {
         "  zyvor verify <privkey> <addr> Cek privkey cocok dengan alamat\n"
         "  zyvor balance <alamat>        Saldo sebuah alamat\n"
         "  zyvor send <dari> <ke> <amt>  Kirim ZYVC (mis. 10.5)\n"
+        "  zyvor sendmsg <ke> <pesan>    Kirim pesan chat (auto-encrypt E2E; --plain utk terbuka)\n"
         "  zyvor mempool                 Daftar transaksi menunggu\n"
         "  zyvor mine <N> [miner]        Tambang N blok (dengan mempool)\n"
         "  zyvor miner solo [alamat] [interval_s] [always]\n"
@@ -375,6 +377,98 @@ int main(int argc, char** argv) {
         if (change > 0) std::cout << "  kembalian: " << formatCoin(change) << " " << TICKER << " -> " << from << "\n";
         std::cout << "  fee    : " << formatCoin(fee) << " " << TICKER << "\n";
         std::cout << "Tambang blok agar transaksi terkonfirmasi: zyvor mine 1\n";
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- sendmsg (chat CLI: auto-encrypt, pesan bebas)
+    if (cmd == "sendmsg" && argc > 3) {
+        std::string to = argv[2];
+        std::string msg;
+        bool plain = false;
+        for (int i = 3; i < argc; i++) {
+            std::string a = argv[i];
+            if (a == "--plain") { plain = true; continue; }
+            if (!msg.empty()) msg += " ";
+            msg += a;
+        }
+        if (msg.empty()) { std::cout << "Pesan kosong.\n"; return 1; }
+        if (msg.size() > MAX_TX_DATA_BYTES) {
+            std::cout << "Pesan terlalu besar (maks " << MAX_TX_DATA_BYTES << " byte).\n";
+            return 1;
+        }
+
+        // pengirim: alamat pertama di wallet
+        auto w = loadWallet();
+        if (w.empty()) { std::cout << "Wallet kosong. Jalankan: zyvor keygen\n"; return 1; }
+        KeyPair* kp = &w[0];
+        std::string from = kp->address;
+
+        // enkripsi E2E kecuali --plain (butuh pubkey penerima dari index on-chain)
+        if (!plain) {
+            std::map<std::string, std::string> idx;
+            for (const auto& b : bc.chain())
+                for (const auto& t : b.transactions) {
+                    if (t.inputs.empty() || t.inputs[0].pubkey.empty()) continue;
+                    std::string f = publicKeyToAddress(t.inputs[0].pubkey);
+                    if (!idx.count(f)) idx[f] = t.inputs[0].pubkey;
+                }
+            auto it = idx.find(to);
+            if (it == idx.end()) {
+                std::cout << "Tidak bisa enkripsi: pubkey penerima belum dikenal (dia belum pernah kirim tx).\n";
+                std::cout << "Kirim pesan terbuka: zyvor sendmsg " << to << " <pesan> --plain\n";
+                return 1;
+            }
+            std::string ct = encryptMessage(it->second, msg);
+            if (ct.empty()) { std::cout << "Enkripsi gagal.\n"; return 1; }
+            msg = ct;
+        }
+
+        // jumlah kirim: minimal 1 zyvor-unit (0.000001) + fee — pakai 0.0001 ala chat
+        uint64_t amount = parseAmount("0.0001");
+        auto utxos = bc.utxo().allForAddress(from);
+        uint64_t fee = TX_FEE;
+        if (msg.size() > DATA_FREE_LIMIT) {
+            size_t extra = msg.size() - DATA_FREE_LIMIT;
+            uint64_t units = (extra + 999) / 1000;
+            fee += units * DATA_FEE_PER_KB;
+        }
+        uint64_t need = amount + fee;
+        uint64_t total = 0;
+        std::vector<OutPoint> selected;
+        for (const auto& kv : utxos) {
+            selected.push_back(kv.first);
+            total += kv.second.amount;
+            if (total >= need) break;
+        }
+        if (total < need) {
+            std::cout << "Saldo kurang: butuh " << formatCoin(need) << ", tersedia " << formatCoin(total) << "\n";
+            return 1;
+        }
+
+        Transaction tx;
+        for (const auto& op : selected) {
+            TxIn in; in.prevOut = op; in.pubkey = kp->publicKey;
+            tx.inputs.push_back(in);
+        }
+        tx.outputs.push_back({amount, to});
+        uint64_t change = total - amount - fee;
+        if (change > 0) tx.outputs.push_back({change, from});
+        tx.timestamp = uint64_t(time(nullptr));
+        tx.data = msg;
+        tx.id = computeTxId(tx);
+        for (auto& in : tx.inputs) in.signature = signMessage(kp->privateKey, tx.id);
+
+        if (!bc.validateTx(tx)) { std::cout << "Transaksi gagal validasi.\n"; return 1; }
+        mp.add(tx);
+        saveMempool(mp);
+
+        std::cout << (plain ? "Pesan terbuka" : "Pesan terenkripsi (E2E)")
+                  << " terkirim ke mempool:\n";
+        std::cout << "  dari  : " << from << "\n";
+        std::cout << "  ke    : " << to << "\n";
+        std::cout << "  txid  : " << tx.id << "\n";
+        std::cout << "  fee   : " << formatCoin(fee) << " " << TICKER << "\n";
+        std::cout << "Penerima lihat instan via: zyvor inbox " << to << "\n";
         return 0;
     }
 
