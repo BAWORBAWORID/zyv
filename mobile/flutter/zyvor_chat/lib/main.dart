@@ -131,20 +131,57 @@ class _HomePageState extends State<HomePage> {
     if (_wallet == null) {
       return Scaffold(
         body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text('Zyvor Chat',
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('Chat E2E on-chain • privkey di HP kamu'),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                icon: const Icon(Icons.key),
-                label: const Text('Buat Wallet'),
-                onPressed: _createWallet,
-              ),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.shield_outlined, size: 72, color: Colors.blueAccent),
+                const SizedBox(height: 16),
+                const Text('Zyvor Chat',
+                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                const Text(
+                  'Chat E2E on-chain • Privkey tersimpan aman di HP kamu',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 32),
+                SizedBox(
+                  width: 220,
+                  height: 48,
+                  child: FilledButton.icon(
+                    icon: _busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.key),
+                    label: Text(_busy ? 'Membuat Wallet...' : 'Buat Wallet'),
+                    onPressed: _busy ? null : _createWallet,
+                  ),
+                ),
+                if (_status.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: _status.contains('gagal') ? Colors.red.withValues(alpha: 0.2) : Colors.amber.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _status,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _status.contains('gagal') ? Colors.redAccent : Colors.amberAccent,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       );

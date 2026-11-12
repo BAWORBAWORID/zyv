@@ -24,8 +24,10 @@ class ChatService {
 
   /// Kirim pesan terenkripsi. Return txid.
   Future<String> sendMessage(String toAddr, String plaintext) async {
-    // 1. pubkey penerima (harus sudah register / pernah kirim tx)
-    final pubTo = await api.pubkey(toAddr);
+    // 1. pubkey penerima (bila ke diri sendiri / register, pakai pubkey lokal langsung)
+    final pubTo = (toAddr == me.address && me.pubkey.isNotEmpty)
+        ? me.pubkey
+        : await api.pubkey(toAddr);
 
     // 2. enkripsi di HP
     final ciphertext = ZyvCore.encrypt(pubTo, plaintext);
@@ -39,7 +41,12 @@ class ChatService {
     final inputs = <Map<String, dynamic>>[];
     var total = 0;
     for (final u in utxos) {
-      final amt = (u['amount'] as num).toDouble();
+      double amt = 0.0;
+      if (u.containsKey('amount') && u['amount'] != null) {
+        amt = (u['amount'] is num) ? (u['amount'] as num).toDouble() : (double.tryParse(u['amount'].toString()) ?? 0.0);
+      } else if (u.containsKey('value') && u['value'] != null) {
+        amt = double.tryParse(u['value'].toString()) ?? 0.0;
+      }
       total += (amt * 1e8).round();
       inputs.add({'txid': u['txid'], 'vout': u['vout']});
       if (total >= need) break;

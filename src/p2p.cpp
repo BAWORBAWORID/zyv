@@ -698,12 +698,13 @@ std::vector<std::string> P2PNode::peers() const {
     std::lock_guard<std::mutex> lk(peersMtx_);
     std::vector<std::string> res;
     for (auto& p : peers_) {
-        // Tampilkan alamat published (advAddress) bila ada, atau identity publik
+        // Hanya daftarkan alamat bore tunnel (advAddress atau target outbound bore/seed)
+        // JANGAN daftarkan IP publik mentah (p.identity) karena bukan port bore yang bisa dijangkau.
         if (!p.advAddress.empty() && !isLoopback(p.advAddress)) {
             res.push_back(p.advAddress);
-        } else if (!p.identity.empty() && !isLoopback(p.identity)) {
-            res.push_back(p.identity);
-        } else if (!isLoopback(p.addr)) {
+        } else if (!p.addr.empty() && p.addr.find("bore.pub") != std::string::npos) {
+            res.push_back(p.addr);
+        } else if (!p.addr.empty() && p.addr.find(".my.id") != std::string::npos) {
             res.push_back(p.addr);
         }
     }
