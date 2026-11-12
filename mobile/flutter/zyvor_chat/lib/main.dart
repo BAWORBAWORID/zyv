@@ -7,7 +7,7 @@ import 'chat_service.dart';
 
 void main() => runApp(const ZyvorChatApp());
 
-const defaultNode = 'http://119.28.71.87:8933';
+const defaultNode = 'http://bore.pub:8934';
 
 class ZyvorChatApp extends StatelessWidget {
   const ZyvorChatApp({super.key});
@@ -35,6 +35,7 @@ class _HomePageState extends State<HomePage> {
   List<ChatMessage> _msgs = [];
   Timer? _poll;
   String _status = '';
+  bool _busy = false;
 
   @override
   void initState() {
@@ -64,12 +65,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _createWallet() async {
-    final w = ZyvCore.keygen();
-    await _storage.write(key: 'address', value: w.address);
-    await _storage.write(key: 'privkey', value: w.privkey);
-    await _storage.write(key: 'pubkey', value: w.pubkey);
-    setState(() => _wallet = w);
-    _startChat();
+    if (_busy) return;
+    _busy = true;
+    setState(() => _status = 'membuat wallet...');
+    try {
+      final w = ZyvCore.keygen();
+      await _storage.write(key: 'address', value: w.address);
+      await _storage.write(key: 'privkey', value: w.privkey);
+      await _storage.write(key: 'pubkey', value: w.pubkey);
+      setState(() => _wallet = w);
+      _startChat();
+    } catch (e) {
+      setState(() => _status = 'gagal buat wallet: $e');
+    } finally {
+      _busy = false;
+    }
   }
 
   void _startChat() {
