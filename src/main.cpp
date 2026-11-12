@@ -410,8 +410,40 @@ int main(int argc, char** argv) {
                 in.push_back({from, t.data, (int)it->index, t.timestamp});
             }
         }
-        if (in.empty()) { std::cout << "Inbox kosong.\n"; return 0; }
-        std::cout << "Inbox " << me << " (" << in.size() << " pesan):\n";
+        // pesan PENDING (masih di mempool, belum masuk blok) — diterima real-time via P2P
+        Mempool mpl; loadMempool(mpl);
+        std::vector<std::pair<Transaction,std::string>> pending;
+        for (const auto& t : mpl.all()) {
+            if (t.data.empty() || t.isCoinbase()) continue;
+            bool toMe = false;
+            for (const auto& o : t.outputs) if (o.address == me) { toMe = true; break; }
+            if (!toMe) continue;
+            std::string from = t.inputs.empty() ? "?" : publicKeyToAddress(t.inputs[0].pubkey);
+            pending.push_back({t, from});
+        }
+        if (in.empty() && pending.empty()) { std::cout << "Inbox kosong.\n"; return 0; }
+        std::cout << "Inbox " << me << " (" << (in.size()+pending.size()) << " pesan):\n";
+        for (const auto& [t, from] : pending) {
+            std::time_t tt = (std::time_t)t.timestamp;
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M", std::localtime(&tt));
+            std::cout << "  PENDING (mem pool)  " << buf << "  dari " << from << "\n";
+            if (isEncryptedMemo(t.data)) {
+                std::string shown;
+                if (mine) {
+                    std::string privMe;
+                    for (const auto& k : w) if (k.address == me) { privMe = k.privateKey; break; }
+                    std::string err;
+                    std::string pt = decryptMessage(privMe, t.data, err);
+                    shown = pt.empty() ? ("[terenkripsi - " + err + "]") : pt;
+                } else {
+                    shown = "[terenkripsi - butuh wallet penerima]";
+                }
+                std::cout << "    > " << shown << "\n";
+            } else {
+                std::cout << "    > " << t.data << "\n";
+            }
+        }
         for (const auto& m : in) {
             std::time_t tt = (std::time_t)m.ts;
             char buf[32];
@@ -549,9 +581,10 @@ int main(int argc, char** argv) {
             p2p.connectTo(s);
         }
 
-        // simpan rantai berkala + reconnect otomatis ke seeds
+        // simpan rantai berkala (10 dtk, biar CLI inbox offline lihat pesan pending cepat)
+        // + reconnect otomatis ke seeds
         for (;;) {
-            std::this_thread::sleep_for(std::chrono::seconds(30));
+            std::this_thread::sleep_for(std::chrono::seconds(10));
             saveChain(bc);
             saveMempool(mp);
             if (p2p.peers().empty()) {
