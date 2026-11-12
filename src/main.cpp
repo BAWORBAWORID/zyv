@@ -7,6 +7,9 @@
 #include <sstream>
 #include <ctime>
 #include <filesystem>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 #include "params.h"
 #include "block.h"
@@ -60,6 +63,41 @@ static void loadMempool(Mempool& mp) {
 static void saveMempool(const Mempool& mp) {
     std::ofstream f(MEMPOOL_FILE, std::ios::trunc);
     f << mp.serialize();
+}
+// Broadcast tx CLI ke jaringan via RPC node lokal (POST /api/sendrawtx).
+// Gagal = node lokal tidak jalan → tx tetap di mempool file (akan tersebar saat node mine).
+static bool broadcastTxRpc(const Transaction& tx) {
+    uint16_t rpcPort = 8933;
+    if (const char* env = std::getenv("ZYVOR_RPC_PORT")) {
+        try { rpcPort = uint16_t(std::stoi(env)); } catch (...) {}
+    }
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(rpcPort);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(fd, (sockaddr*)&addr, sizeof(addr)) < 0) { ::close(fd); return false; }
+    std::string body = tx.serialize();
+    std::string req = "POST /api/sendrawtx HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                      "Content-Type: text/plain\r\nContent-Length: "
+                      + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+    ssize_t sent = 0;
+    while (sent < (ssize_t)req.size()) {
+        ssize_t n = ::send(fd, req.data() + sent, req.size() - sent, MSG_NOSIGNAL);
+        if (n <= 0) { ::close(fd); return false; }
+        sent += n;
+    }
+    char buf[512];
+    std::string resp;
+    for (;;) {
+        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        resp.append(buf, buf + n);
+        if (resp.size() > 4096) break;
+    }
+    ::close(fd);
+    return resp.find("\"ok\"") != std::string::npos;
 }
 // ------------------------------------------------------------------ wallet storage
 // Passphrase dari env ZYVOR_WALLET_PASS. Bila diset, wallet disimpan
@@ -184,6 +222,7 @@ static void usage() {
         "  zyvor balance <alamat>        Saldo sebuah alamat\n"
         "  zyvor send <dari> <ke> <amt>  Kirim ZYVC (mis. 10.5)\n"
         "  zyvor sendmsg <ke> <pesan>    Kirim pesan chat (auto-encrypt E2E; --plain utk terbuka)\n"
+        "  zyvor register                Daftarkan pubkey alamat pertama agar bisa terima pesan E2E\n"
         "  zyvor mempool                 Daftar transaksi menunggu\n"
         "  zyvor mine <N> [miner]        Tambang N blok (dengan mempool)\n"
         "  zyvor miner solo [alamat] [interval_s] [always]\n"
@@ -376,7 +415,54 @@ int main(int argc, char** argv) {
         std::cout << "  kirim  : " << formatCoin(amount) << " " << TICKER << " -> " << to << "\n";
         if (change > 0) std::cout << "  kembalian: " << formatCoin(change) << " " << TICKER << " -> " << from << "\n";
         std::cout << "  fee    : " << formatCoin(fee) << " " << TICKER << "\n";
+        if (broadcastTxRpc(tx))
+            std::cout << "  broadcast: ✓ (tx tersebar ke jaringan)\n";
+        else
+            std::cout << "  broadcast: - (node lokal tidak jalan; tx tersebar saat node mine)\n";
         std::cout << "Tambang blok agar transaksi terkonfirmasi: zyvor mine 1\n";
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- register (daftarkan pubkey ke chain agar bisa menerima pesan terenkripsi)
+    if (cmd == "register") {
+        auto w = loadWallet();
+        if (w.empty()) { std::cout << "Wallet kosong. Jalankan: zyvor keygen\n"; return 1; }
+        KeyPair* kp = &w[0];
+        std::string me = kp->address;
+        uint64_t amount = parseAmount("0.0001");
+        uint64_t fee = TX_FEE;
+        auto utxos = bc.utxo().allForAddress(me);
+        uint64_t total = 0;
+        std::vector<OutPoint> selected;
+        for (const auto& kv : utxos) {
+            selected.push_back(kv.first);
+            total += kv.second.amount;
+            if (total >= amount + fee) break;
+        }
+        if (total < amount + fee) {
+            std::cout << "Saldo kurang untuk register (butuh " << formatCoin(amount + fee) << ").\n";
+            return 1;
+        }
+        Transaction tx;
+        for (const auto& op : selected) {
+            TxIn in; in.prevOut = op; in.pubkey = kp->publicKey;
+            tx.inputs.push_back(in);
+        }
+        tx.outputs.push_back({amount, me});
+        uint64_t change = total - amount - fee;
+        if (change > 0) tx.outputs.push_back({change, me});
+        tx.timestamp = uint64_t(time(nullptr));
+        tx.id = computeTxId(tx);
+        for (auto& in : tx.inputs) in.signature = signMessage(kp->privateKey, tx.id);
+        if (!bc.validateTx(tx)) { std::cout << "Transaksi gagal validasi.\n"; return 1; }
+        mp.add(tx);
+        saveMempool(mp);
+        if (broadcastTxRpc(tx))
+            std::cout << "Register ✓ — tx tersebar ke jaringan. Setelah masuk blok, alamat ini\n"
+                      << "bisa menerima pesan terenkripsi: " << me << "\n";
+        else
+            std::cout << "Register ✓ (mempool lokal) — node lokal tidak jalan, tersebar saat mine.\n"
+                      << "Alamat: " << me << "\n";
         return 0;
     }
 
@@ -468,6 +554,10 @@ int main(int argc, char** argv) {
         std::cout << "  ke    : " << to << "\n";
         std::cout << "  txid  : " << tx.id << "\n";
         std::cout << "  fee   : " << formatCoin(fee) << " " << TICKER << "\n";
+        if (broadcastTxRpc(tx))
+            std::cout << "  broadcast: ✓ (pesan tersebar real-time ke seluruh jaringan)\n";
+        else
+            std::cout << "  broadcast: - (node lokal tidak jalan; pesan tersebar saat node mine)\n";
         std::cout << "Penerima lihat instan via: zyvor inbox " << to << "\n";
         return 0;
     }
