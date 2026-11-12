@@ -469,6 +469,7 @@ std::string RpcServer::jsonSend(const std::string& body, const std::string& quer
 // Pesan mempool ikut ditampilkan dengan status "pending".
 std::string RpcServer::jsonMessages(const std::string& query) {
     std::string addr, dir = "both";
+    bool dec = false;
     int limit = 50;
     std::istringstream qs(query);
     std::string kv;
@@ -479,6 +480,7 @@ std::string RpcServer::jsonMessages(const std::string& query) {
         if (k == "addr") addr = v;
         else if (k == "limit") limit = std::stoi(v);
         else if (k == "dir") dir = v;
+        else if (k == "dec") dec = (v == "1" || v == "true");
     }
     if (addr.empty()) return jsonErr("butuh addr");
     if (limit < 1) limit = 1;
@@ -516,13 +518,52 @@ std::string RpcServer::jsonMessages(const std::string& query) {
     });
     if ((int)msgs.size() > limit) msgs.resize(limit);
 
+    // dec=1: dekripsi pesan terenkripsi (ECIES) bila privkey alamat ada di wallet node ini.
+    // Tanpa wallet/privkey yang cocok, data tetap ciphertext (tidak pernah error).
+    std::map<std::string, std::string> privByAddr;
+    if (dec) {
+        const char* home = std::getenv("HOME");
+        std::string walletFile = (home ? std::string(home) : ".") + std::string("/.zyvor/wallet.dat");
+        std::ifstream f(walletFile);
+        if (f.good()) {
+            std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::string pass;
+            if (const char* p = std::getenv("ZYVOR_WALLET_PASS")) pass = p;
+            if (data.rfind("ZYVW1|", 0) == 0 && !pass.empty()) {
+                if (!decryptWalletFile(walletFile, data, pass)) data.clear();
+            }
+            if (!data.empty()) {
+                std::istringstream iss(data);
+                std::string line;
+                while (std::getline(iss, line)) {
+                    if (line.empty()) continue;
+                    try {
+                        KeyPair k = keyPairFromPrivate(line);
+                        privByAddr[k.address] = k.privateKey;
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+
     std::ostringstream o;
     o << "{\"addr\":" << jstr(addr) << ",\"count\":" << msgs.size() << ",\"messages\":[";
     for (size_t i = 0; i < msgs.size(); i++) {
+        std::string shown = msgs[i].data;
+        bool decrypted = false;
+        if (dec && isEncryptedMemo(shown)) {
+            auto pit = privByAddr.find(addr);
+            if (pit != privByAddr.end()) {
+                std::string err;
+                std::string pt = decryptMessage(pit->second, shown, err);
+                if (!pt.empty()) { shown = pt; decrypted = true; }
+            }
+        }
         if (i) o << ",";
         o << "{\"from\":" << jstr(msgs[i].from)
           << ",\"to\":" << jstr(msgs[i].to)
-          << ",\"data\":" << jstr(msgs[i].data)
+          << ",\"data\":" << jstr(shown)
+          << ",\"decrypted\":" << (decrypted ? "true" : "false")
           << ",\"txid\":" << jstr(msgs[i].txid)
           << ",\"status\":" << jstr(msgs[i].status)
           << ",\"time\":" << msgs[i].ts
