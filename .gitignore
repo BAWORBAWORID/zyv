@@ -3,8 +3,8 @@
 *.log
 
 # build artifacts
-zyvor
-zyvor.o
+/zyvor
+/zyvor.o
 *.o
 tests/test_fork
 test_fork
