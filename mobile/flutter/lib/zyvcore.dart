@@ -1,6 +1,7 @@
 import 'dart:ffi';
 import 'dart:io' show Platform;
 import 'dart:convert';
+import 'package:ffi/ffi.dart';
 
 /// Flutter FFI bindings untuk libzyvcore (core Zyvor C++).
 ///
@@ -62,7 +63,7 @@ class ZyvCore {
     final p = fn.asFunction<Pointer<Utf8> Function(Pointer<Utf8>)>()(pa);
     final s = p.toDartString();
     _free.asFunction<void Function(Pointer<Utf8>)>()(p);
-    pa.free();
+    calloc.free(pa);
     return s;
   }
 
@@ -78,8 +79,8 @@ class ZyvCore {
     final p = fn.asFunction<Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Utf8>)>()(pa, pb);
     final s = p.toDartString();
     _free.asFunction<void Function(Pointer<Utf8>)>()(p);
-    pa.free();
-    pb.free();
+    calloc.free(pa);
+    calloc.free(pb);
     return s;
   }
 
@@ -149,10 +150,10 @@ class ZyvCore {
                 Pointer<Utf8>, Pointer<Utf8>)>()(pIn, pOut, pData, pPriv);
     final s = p.toDartString();
     _free.asFunction<void Function(Pointer<Utf8>)>()(p);
-    pIn.free();
-    pOut.free();
-    pData.free();
-    pPriv.free();
+    calloc.free(pIn);
+    calloc.free(pOut);
+    calloc.free(pData);
+    calloc.free(pPriv);
     _throwIfError(s);
     return s;
   }
@@ -173,4 +174,10 @@ class Wallet {
 
   Map<String, dynamic> toJson() =>
       {'address': address, 'privkey': privkey, 'pubkey': pubkey};
+}
+
+// helper free mem dari toNativeUtf8 (calloc)
+void callocFree(dynamic p) {
+  // ignore: invalid_use_of_internal_member
+  calloc.free(p as Pointer<NativeType>);
 }
