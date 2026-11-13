@@ -31,6 +31,9 @@ WORKDIR /data
 EXPOSE 9933/tcp 8933/tcp
 
 ENV ZYVOR_RPC_PORT=8933
+# Aktifkan bore tunnel relay secara default agar node mendapatkan port publik
+# dan otomatis terdaftar serta dibagikan ke peer lain di seluruh jaringan.
+ENV ENABLE_BORE=1
 # Seed default sudah bore.pub:5315 (params.h). Override: -e ZYVOR_SEEDS=...
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
