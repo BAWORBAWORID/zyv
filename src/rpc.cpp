@@ -737,4 +737,21 @@ std::string RpcServer::jsonPoolStats() {
     return o.str();
 }
 
+bool RpcServer::autoMine(const std::string& minerAddr) {
+    std::lock_guard<std::mutex> lk(bcMtx_);
+    if (mp_.size() == 0) return false;
+    const Block& b = bc_.mineBlock(mp_.all(), minerAddr);
+    std::vector<std::string> ids;
+    for (size_t t = 1; t < b.transactions.size(); t++) ids.push_back(b.transactions[t].id);
+    mp_.remove(ids);
+    p2p_.broadcastBlock(b);
+    std::vector<Transaction> pool = mp_.all();
+    size_t stale = bc_.purgeMempool(pool);
+    if (stale > 0) {
+        mp_.clear();
+        for (const auto& t : pool) mp_.add(t);
+    }
+    return true;
+}
+
 } // namespace zyv

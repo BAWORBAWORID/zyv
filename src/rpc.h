@@ -31,6 +31,7 @@ public:
     bool start(uint16_t port);
     void stop();
     bool running() const { return running_.load(); }
+    bool autoMine(const std::string& minerAddr);
 
 private:
     void acceptLoop();

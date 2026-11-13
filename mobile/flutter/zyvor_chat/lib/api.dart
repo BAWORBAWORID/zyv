@@ -45,6 +45,10 @@ class ZyvorApi {
   Future<Map<String, dynamic>> address(String addr) async =>
       _parse(await http.get(Uri.parse('$nodeUrl/api/address/$addr')));
 
+  /// Klaim koin dari faucet/miner node (untuk saldo awal registrasi & kirim pesan).
+  Future<Map<String, dynamic>> claimFaucet(String addr) async =>
+      _parse(await http.get(Uri.parse('$nodeUrl/api/mine?addr=$addr&n=1')));
+
   // ---------------------------------------------------------------- write
   /// Kirim tx yang SUDAH ditandatangani di HP (zyvcore.buildTx) → broadcast.
   /// Return txid. Privkey TIDAK pernah keluar dari HP.

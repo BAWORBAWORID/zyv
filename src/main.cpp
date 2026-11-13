@@ -765,8 +765,41 @@ int main(int argc, char** argv) {
             p2p.connectTo(s);
         }
 
+        // Auto-mine setup
+        std::string minerAddr;
+        if (const char* env = std::getenv("ZYVOR_MINER_ADDR")) {
+            minerAddr = env;
+        } else {
+            auto w = loadWallet();
+            if (!w.empty()) {
+                minerAddr = w[0].address;
+            } else {
+                KeyPair kp = generateKeyPair();
+                minerAddr = kp.address;
+                saveWalletAll({kp});
+            }
+        }
+
+        bool autoMine = true;
+        if (const char* env = std::getenv("ZYVOR_AUTOMINE")) {
+            if (std::string(env) == "0" || std::string(env) == "false") autoMine = false;
+        }
+        int mineInterval = 60;
+        if (const char* env = std::getenv("ZYVOR_MINE_INTERVAL")) {
+            try { mineInterval = std::stoi(env); } catch (...) {}
+        }
+        if (mineInterval < 5) mineInterval = 5;
+
+        if (autoMine) {
+            std::cout << "[AutoMine] Aktif - interval " << mineInterval << "s, reward ke " << minerAddr << "\n";
+        }
+
+        auto lastMineTime = std::chrono::steady_clock::now();
+        auto firstPendingTime = std::chrono::steady_clock::now();
+        bool hasPending = false;
+
         // simpan rantai berkala (10 dtk, biar CLI inbox offline lihat pesan pending cepat)
-        // + reconnect otomatis ke seeds
+        // + reconnect otomatis ke seeds + auto-mine jika mempool ada tx
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(10));
             saveChain(bc);
@@ -774,6 +807,31 @@ int main(int argc, char** argv) {
             if (p2p.peers().empty()) {
                 std::cout << "[P2P] tidak ada peer - mencoba reconnect seed...\n";
                 for (const auto& s : seeds) p2p.connectTo(s);
+            }
+
+            if (autoMine) {
+                if (mp.size() == 0) {
+                    hasPending = false;
+                } else {
+                    auto now = std::chrono::steady_clock::now();
+                    if (!hasPending) {
+                        hasPending = true;
+                        firstPendingTime = now;
+                    }
+                    auto pendingElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - firstPendingTime).count();
+                    auto sinceLastMine = std::chrono::duration_cast<std::chrono::seconds>(now - lastMineTime).count();
+                    if (pendingElapsed >= mineInterval && sinceLastMine >= mineInterval) {
+                        std::cout << "[AutoMine] Mempool ada " << mp.size() << " tx, menambang 1 blok...\n";
+                        if (rpc.autoMine(minerAddr)) {
+                            saveChain(bc);
+                            saveMempool(mp);
+                            lastMineTime = std::chrono::steady_clock::now();
+                            hasPending = (mp.size() > 0);
+                            if (hasPending) firstPendingTime = lastMineTime;
+                            std::cout << "[AutoMine] Blok #" << bc.height() << " sukses ditambang & di-broadcast. Sisa mempool: " << mp.size() << "\n";
+                        }
+                    }
+                }
             }
         }
     }

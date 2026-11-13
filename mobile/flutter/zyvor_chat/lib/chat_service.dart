@@ -108,6 +108,15 @@ class ChatService {
 
   /// Daftarkan pubkey saya (agar bisa menerima pesan E2E) — kirim 0.0001 ke diri sendiri.
   Future<String> register() => sendMessage(me.address, 'register');
+
+  /// Saldo saya saat ini.
+  Future<String> getBalance() async {
+    final addrInfo = await api.address(me.address);
+    return addrInfo['balance']?.toString() ?? '0.00000000';
+  }
+
+  /// Klaim koin gratis (faucet 50 ZYVC).
+  Future<Map<String, dynamic>> claimFaucet() => api.claimFaucet(me.address);
 }
 
 class ChatMessage {
