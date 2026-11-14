@@ -369,7 +369,9 @@ std::string RpcServer::jsonSend(const std::string& body, const std::string& quer
         return jsonErr("butuh from, to, amount (data/memo opsional)");
 
     // enkripsi memo (ECIES) pakai pubkey penerima dari index on-chain
-    if (enc && !memo.empty()) {
+    // Default: di-enkripsi jika ada memo & tidak eksplisit enc=0/false
+    bool doEncrypt = enc || (!memo.empty() && query.find("enc=0") == std::string::npos && query.find("enc=false") == std::string::npos);
+    if (doEncrypt && !memo.empty()) {
         auto idx = buildPubkeyIndex(bc_);
         auto it = idx.find(to);
         if (it == idx.end())

@@ -64,7 +64,37 @@ static void saveMempool(const Mempool& mp) {
     std::ofstream f(MEMPOOL_FILE, std::ios::trunc);
     f << mp.serialize();
 }
-// Broadcast tx CLI ke jaringan via RPC node lokal (POST /api/sendrawtx).
+// Ambil pubkey alamat dari node lokal RPC (/api/pubkey?addr=X) jika chain lokal CLI belum catchup
+static std::string fetchPubkeyRpc(const std::string& addr) {
+    uint16_t rpcPort = 8933;
+    if (const char* env = std::getenv("ZYVOR_RPC_PORT")) {
+        try { rpcPort = uint16_t(std::stoi(env)); } catch (...) {}
+    }
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return "";
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(rpcPort);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(fd, (sockaddr*)&a, sizeof(a)) < 0) { ::close(fd); return ""; }
+    std::string req = "GET /api/pubkey?addr=" + addr + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+    char buf[1024];
+    std::string resp;
+    for (;;) {
+        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        resp.append(buf, buf + n);
+        if (resp.size() > 4096) break;
+    }
+    ::close(fd);
+    size_t pos = resp.find("\"pubkey\":\"");
+    if (pos == std::string::npos) return "";
+    pos += 10;
+    size_t end = resp.find("\"", pos);
+    if (end == std::string::npos) return "";
+    return resp.substr(pos, end - pos);
+}
 // Gagal = node lokal tidak jalan → tx tetap di mempool file (akan tersebar saat node mine).
 static bool broadcastTxRpc(const Transaction& tx) {
     uint16_t rpcPort = 8933;
@@ -355,13 +385,48 @@ int main(int argc, char** argv) {
         uint64_t amount = parseAmount(argv[4]);
         // arg ke-6 opsional: data/memo (maks 80 byte, disimpan hex on-chain)
         std::string memo;
+        bool plain = false;
         if (argc > 5) {
-            memo = argv[5];
+            for (int i = 5; i < argc; i++) {
+                std::string a = argv[i];
+                if (a == "--plain") { plain = true; continue; }
+                if (!memo.empty()) memo += " ";
+                memo += a;
+            }
             if (memo.size() > MAX_TX_DATA_BYTES) {
                 std::cout << "Data/memo terlalu besar (maks " << MAX_TX_DATA_BYTES
                           << " byte).\n";
                 return 1;
             }
+        }
+
+        // Default: Enkripsi E2E (ECIES) jika ada memo & bukan --plain
+        if (!memo.empty() && !plain) {
+            std::map<std::string, std::string> idx;
+            for (const auto& b : bc.chain()) {
+                for (const auto& t : b.transactions) {
+                    if (t.inputs.empty() || t.inputs[0].pubkey.empty()) continue;
+                    std::string f = publicKeyToAddress(t.inputs[0].pubkey);
+                    if (!idx.count(f)) idx[f] = t.inputs[0].pubkey;
+                }
+            }
+            std::string targetPub;
+            auto it = idx.find(to);
+            if (it != idx.end()) {
+                targetPub = it->second;
+            } else {
+                targetPub = fetchPubkeyRpc(to);
+            }
+            if (targetPub.empty()) {
+                std::cout << "Peringatan: Pubkey penerima belum dikenal on-chain. Gunakan --plain jika ingin mengirim memo terbuka.\n";
+                return 1;
+            }
+            std::string ct = encryptMessage(targetPub, memo);
+            if (ct.empty()) {
+                std::cout << "Enkripsi memo gagal.\n";
+                return 1;
+            }
+            memo = ct;
         }
 
         auto w = loadWallet();
